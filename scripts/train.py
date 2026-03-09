@@ -60,13 +60,14 @@ class VQATrainer:
         )
         
         # Learning rate scheduler
+                # Learning rate scheduler
         self.scheduler = optim.lr_scheduler.ReduceLROnPlateau(
             self.optimizer,
             mode='max',
             factor=0.5,
             patience=2,
-            verbose=True
         )
+        self.current_lr = learning_rate  # Track current LR
         
         # Checkpoint directory
         self.checkpoint_dir = checkpoint_dir or config.paths.checkpoints_dir
@@ -231,9 +232,15 @@ class VQATrainer:
             val_loss, val_acc = self.validate(epoch)
             
             # Update learning rate
+                        # Update learning rate
+            old_lr = self.optimizer.param_groups[0]['lr']
             self.scheduler.step(val_acc)
             current_lr = self.optimizer.param_groups[0]['lr']
-            
+
+            # Print if LR changed
+            if current_lr != old_lr:
+                print(f"Learning rate reduced: {old_lr:.2e} → {current_lr:.2e}")
+                        
             # Update history
             self.history['train_loss'].append(train_loss)
             self.history['train_acc'].append(train_acc)
