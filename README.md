@@ -1,0 +1,1 @@
+Help me build a base VQA project for medical images and texts which I can progressively enhance with those methods. Give me step by step instructions on how to build this project, starting from project file structure to coding. Remember I use UV for python package management 

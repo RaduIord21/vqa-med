@@ -1,0 +1,51 @@
+image_path,question,answer
+sample_000.jpg,What is the imaging modality?,x-ray
+sample_001.jpg,Is there any abnormality visible?,yes
+sample_002.jpg,What color is highlighted?,white
+sample_003.jpg,Is this a normal scan?,no
+sample_004.jpg,Is there any abnormality visible?,yes
+sample_005.jpg,What organ is shown in the image?,lung
+sample_006.jpg,Is this a normal scan?,no
+sample_007.jpg,Is there any abnormality visible?,yes
+sample_008.jpg,What organ is shown in the image?,lung
+sample_009.jpg,What is the imaging modality?,x-ray
+sample_010.jpg,What organ is shown in the image?,lung
+sample_011.jpg,What organ is shown in the image?,lung
+sample_012.jpg,What color is highlighted?,white
+sample_013.jpg,What color is highlighted?,white
+sample_014.jpg,Is there any abnormality visible?,yes
+sample_015.jpg,What color is highlighted?,white
+sample_016.jpg,What color is highlighted?,white
+sample_017.jpg,What is the imaging modality?,x-ray
+sample_018.jpg,Is there any abnormality visible?,yes
+sample_019.jpg,What organ is shown in the image?,lung
+sample_020.jpg,Is this a normal scan?,no
+sample_021.jpg,What is the imaging modality?,x-ray
+sample_022.jpg,What is the imaging modality?,x-ray
+sample_023.jpg,Is this a normal scan?,no
+sample_024.jpg,What is the imaging modality?,x-ray
+sample_025.jpg,Is this a normal scan?,no
+sample_026.jpg,What is the imaging modality?,x-ray
+sample_027.jpg,Is this a normal scan?,no
+sample_028.jpg,Is there any abnormality visible?,yes
+sample_029.jpg,What is the imaging modality?,x-ray
+sample_030.jpg,What color is highlighted?,white
+sample_031.jpg,Is there any abnormality visible?,yes
+sample_032.jpg,Is there any abnormality visible?,yes
+sample_033.jpg,Is there any abnormality visible?,yes
+sample_034.jpg,What is the imaging modality?,x-ray
+sample_035.jpg,Is there any abnormality visible?,yes
+sample_036.jpg,Is there any abnormality visible?,yes
+sample_037.jpg,What color is highlighted?,white
+sample_038.jpg,What organ is shown in the image?,lung
+sample_039.jpg,What organ is shown in the image?,lung
+sample_040.jpg,What is the imaging modality?,x-ray
+sample_041.jpg,What is the imaging modality?,x-ray
+sample_042.jpg,What color is highlighted?,white
+sample_043.jpg,What is the imaging modality?,x-ray
+sample_044.jpg,What organ is shown in the image?,lung
+sample_045.jpg,Is there any abnormality visible?,yes
+sample_046.jpg,What organ is shown in the image?,lung
+sample_047.jpg,What color is highlighted?,white
+sample_048.jpg,Is this a normal scan?,no
+sample_049.jpg,Is this a normal scan?,no
