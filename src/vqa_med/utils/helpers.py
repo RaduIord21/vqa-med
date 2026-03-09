@@ -98,10 +98,13 @@ def load_vqa_rad_data(data_dir: Path) -> pd.DataFrame:
         if not question_type or question_type == 'unknown':
             question_type = item.get('phrase_type', 'unknown')
         
+        # Convert answer to string and normalize (handles both string and int answers)
+        answer_str = str(answer).lower().strip() if answer else ''
+        
         records.append({
             'image_path': image_name,
             'question': question,
-            'answer': answer.lower().strip(),  # Normalize answers
+            'answer': answer_str,
             'question_type': question_type,
             'answer_type': answer_type,
         })
@@ -110,6 +113,7 @@ def load_vqa_rad_data(data_dir: Path) -> pd.DataFrame:
     
     # Remove any empty entries
     df = df[df['image_path'].notna() & df['question'].notna() & df['answer'].notna()]
+    df = df[df['answer'] != '']  # Remove empty string answers
     
     print(f"Loaded {len(df)} QA pairs from VQA-RAD")
     print(f"Unique images: {df['image_path'].nunique()}")
@@ -120,7 +124,6 @@ def load_vqa_rad_data(data_dir: Path) -> pd.DataFrame:
     print(df['answer_type'].value_counts())
     
     return df
-
 
 def prepare_vqa_rad_for_training(
     vqa_rad_dir: Path,
