@@ -33,14 +33,24 @@ class VQAEvaluator:
     def __init__(
         self,
         model_wrapper: VQAModelWrapper,
-        dataset: MedicalVQADataset,
+        dataset,
+        full_dataset=None,  # Add this parameter
         device: str = "cuda"
     ):
         self.model = model_wrapper
         self.dataset = dataset
         self.device = device
-        self.idx_to_answer = dataset.idx_to_answer
-        self.answer_to_idx = dataset.answer_to_idx
+        
+        # Use full_dataset for vocab if provided, otherwise use dataset
+        vocab_dataset = full_dataset if full_dataset is not None else dataset
+        
+        # Handle Subset
+        if hasattr(vocab_dataset, 'dataset'):
+            vocab_dataset = vocab_dataset.dataset
+        
+        self.idx_to_answer = vocab_dataset.idx_to_answer
+        self.answer_to_idx = vocab_dataset.answer_to_idx
+        self.full_dataset = vocab_dataset
         
         # Results storage
         self.predictions = []
@@ -50,7 +60,7 @@ class VQAEvaluator:
         self.answer_types = []
         self.questions = []
         self.images = []
-        
+    
     def evaluate(self, batch_size: int = 16):
         """Run evaluation on entire dataset."""
         print("Running evaluation...")
@@ -86,12 +96,18 @@ class VQAEvaluator:
                     self.questions.append(batch['question_text'][i])
                     self.images.append(batch['image_path'][i] if 'image_path' in batch else 'N/A')
                     
-                    # Get question type and answer type from dataset
-                    idx = len(self.predictions) - 1
-                    data_row = self.dataset.data.iloc[idx]
+                    # Get question type and answer type
+                    if hasattr(self.dataset, 'indices'):
+                        # It's a Subset
+                        actual_idx = self.dataset.indices[len(self.predictions) - 1]
+                    else:
+                        # It's the full dataset
+                        actual_idx = len(self.predictions) - 1
+                    
+                    data_row = self.full_dataset.data.iloc[actual_idx]
                     self.question_types.append(data_row.get('question_type', 'unknown'))
                     self.answer_types.append(data_row.get('answer_type', 'unknown'))
-        
+
         print(f"Evaluation complete: {len(self.predictions)} samples")
     
     def calculate_metrics(self):
@@ -451,8 +467,7 @@ def main():
     print(f"Checkpoint val acc: {checkpoint.get('val_acc', 'N/A'):.2f}%")
     
     # Create evaluator
-    evaluator = VQAEvaluator(model_wrapper, eval_dataset, device=args.device)
-    
+    evaluator = VQAEvaluator(model_wrapper, eval_dataset, full_dataset=full_dataset, device=args.device)    
     # Run evaluation
     evaluator.evaluate(batch_size=args.batch_size)
     
