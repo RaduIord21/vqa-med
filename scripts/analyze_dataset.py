@@ -262,6 +262,24 @@ class DatasetAnalyzer:
         print("6. Image Characteristics...")
         report['image_stats'] = self.analyze_images(sample_size=100)
         
+        # Convert numpy types to native Python types
+        def convert_to_serializable(obj):
+            """Recursively convert numpy types to Python native types."""
+            if isinstance(obj, dict):
+                return {k: convert_to_serializable(v) for k, v in obj.items()}
+            elif isinstance(obj, list):
+                return [convert_to_serializable(item) for item in obj]
+            elif isinstance(obj, (np.integer, np.int64, np.int32)):
+                return int(obj)
+            elif isinstance(obj, (np.floating, np.float64, np.float32)):
+                return float(obj)
+            elif isinstance(obj, np.ndarray):
+                return obj.tolist()
+            else:
+                return obj
+        
+        report = convert_to_serializable(report)
+        
         # Save report
         with open(output_dir / 'dataset_analysis.json', 'w') as f:
             json.dump(report, f, indent=2)
@@ -269,7 +287,7 @@ class DatasetAnalyzer:
         print(f"\nReport saved to: {output_dir / 'dataset_analysis.json'}")
         
         return report
-    
+
     def plot_visualizations(self, output_dir: Path):
         """Generate visualizations."""
         output_dir = Path(output_dir)
