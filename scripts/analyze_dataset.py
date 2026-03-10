@@ -2,11 +2,20 @@
 Dataset analysis script.
 Analyzes VQA-RAD dataset characteristics, distributions, and statistics.
 """
+
+import os
+
+
+os.environ['MPLBACKEND'] = 'Agg'
+
 import pandas as pd
 import numpy as np
 from pathlib import Path
 import json
 import argparse
+import matplotlib
+
+matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import seaborn as sns
 from collections import Counter
