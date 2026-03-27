@@ -1,5 +1,5 @@
 """
-Train attention-based VQA model.
+Fast attention-based VQA training with mixed precision and optimizations.
 """
 import os
 os.environ['MPLBACKEND'] = 'Agg'
@@ -8,6 +8,7 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader, random_split
+from torch.cuda.amp import autocast, GradScaler  # Mixed precision
 from pathlib import Path
 from tqdm import tqdm
 import json
@@ -25,16 +26,33 @@ from vqa_med.utils import (
 from vqa_med.config import config
 
 
-class AttentionTrainer:
-    """Trainer for attention-based model."""
+class FastAttentionTrainer:
+    """Optimized trainer with mixed precision and multi-GPU support."""
     
-    def __init__(self, model, train_loader, val_loader, device, lr, epochs, checkpoint_dir, use_multi_gpu=True):
+    def __init__(
+        self, 
+        model, 
+        train_loader, 
+        val_loader, 
+        device, 
+        lr, 
+        epochs, 
+        checkpoint_dir,
+        use_amp=True,  # Automatic Mixed Precision
+        use_multi_gpu=True,
+        gradient_accumulation_steps=1,
+    ):
         self.device = torch.device(device if torch.cuda.is_available() else "cpu")
+        self.use_amp = use_amp and torch.cuda.is_available()
+        self.gradient_accumulation_steps = gradient_accumulation_steps
+        
+        # Multi-GPU support
         if use_multi_gpu and torch.cuda.device_count() > 1:
-            print(f"Using {torch.cuda.device_count()} GPUs!")
+            print(f"🚀 Using {torch.cuda.device_count()} GPUs with DataParallel!")
             model = nn.DataParallel(model)
             self.is_parallel = True
         else:
+            print(f"Using single GPU/CPU: {self.device}")
             self.is_parallel = False
         
         self.model = model.to(self.device)
@@ -44,21 +62,29 @@ class AttentionTrainer:
         
         self.criterion = nn.CrossEntropyLoss()
         
-        # Different learning rates for pretrained vs new layers
-        pretrained_params = list(self.model.vision_encoder.parameters()) + \
-                           list(self.model.text_encoder.parameters())
-        new_params = list(self.model.cross_attention.parameters()) + \
-                    list(self.model.fusion.parameters()) + \
-                    list(self.model.classifier.parameters())
+        # Optimizer with different LRs
+        if self.is_parallel:
+            base_model = self.model.module
+        else:
+            base_model = self.model
+        
+        pretrained_params = list(base_model.vision_encoder.parameters()) + \
+                           list(base_model.text_encoder.parameters())
+        new_params = list(base_model.cross_attention.parameters()) + \
+                    list(base_model.fusion.parameters()) + \
+                    list(base_model.classifier.parameters())
         
         self.optimizer = optim.AdamW([
-            {'params': pretrained_params, 'lr': lr * 0.1},  # Lower LR for pretrained
-            {'params': new_params, 'lr': lr}  # Higher LR for new layers
+            {'params': pretrained_params, 'lr': lr * 0.1},
+            {'params': new_params, 'lr': lr}
         ], weight_decay=0.01)
         
         self.scheduler = optim.lr_scheduler.CosineAnnealingLR(
             self.optimizer, T_max=epochs, eta_min=1e-7
         )
+        
+        # Mixed precision scaler
+        self.scaler = GradScaler() if self.use_amp else None
         
         self.checkpoint_dir = Path(checkpoint_dir)
         self.checkpoint_dir.mkdir(parents=True, exist_ok=True)
@@ -66,7 +92,10 @@ class AttentionTrainer:
         self.history = {'train_loss': [], 'train_acc': [], 'val_loss': [], 'val_acc': [], 'lr': []}
         self.best_val_acc = 0.0
         
-        print(f"Trainer initialized on {self.device}")
+        if self.use_amp:
+            print("✓ Mixed Precision (FP16) enabled - ~2x faster training!")
+        if gradient_accumulation_steps > 1:
+            print(f"✓ Gradient Accumulation: {gradient_accumulation_steps} steps - simulates larger batch size")
     
     def train_epoch(self, epoch):
         self.model.train()
@@ -75,27 +104,55 @@ class AttentionTrainer:
         
         pbar = tqdm(self.train_loader, desc=f"Epoch {epoch}/{self.num_epochs} [Train]")
         
-        for batch in pbar:
+        self.optimizer.zero_grad()
+        
+        for batch_idx, batch in enumerate(pbar):
             images = batch['image'].to(self.device)
             input_ids = batch['question']['input_ids'].to(self.device)
             attention_mask = batch['question']['attention_mask'].to(self.device)
             labels = batch['answer'].to(self.device)
             
-            logits = self.model(images, input_ids, attention_mask)
-            loss = self.criterion(logits, labels)
+            # Mixed precision forward pass
+            if self.use_amp:
+                with autocast():
+                    logits = self.model(images, input_ids, attention_mask)
+                    loss = self.criterion(logits, labels)
+                    loss = loss / self.gradient_accumulation_steps
+                
+                # Scaled backward pass
+                self.scaler.scale(loss).backward()
+                
+                # Gradient accumulation
+                if (batch_idx + 1) % self.gradient_accumulation_steps == 0:
+                    self.scaler.unscale_(self.optimizer)
+                    torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
+                    self.scaler.step(self.optimizer)
+                    self.scaler.update()
+                    self.optimizer.zero_grad()
+            else:
+                # Regular training
+                logits = self.model(images, input_ids, attention_mask)
+                loss = self.criterion(logits, labels)
+                loss = loss / self.gradient_accumulation_steps
+                
+                loss.backward()
+                
+                if (batch_idx + 1) % self.gradient_accumulation_steps == 0:
+                    torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
+                    self.optimizer.step()
+                    self.optimizer.zero_grad()
             
-            self.optimizer.zero_grad()
-            loss.backward()
-            torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
-            self.optimizer.step()
-            
+            # Metrics
             predictions = torch.argmax(logits, dim=1)
             acc = calculate_accuracy(predictions, labels)
             
-            loss_meter.update(loss.item(), images.size(0))
+            loss_meter.update(loss.item() * self.gradient_accumulation_steps, images.size(0))
             acc_meter.update(acc, images.size(0))
             
-            pbar.set_postfix({'loss': f'{loss_meter.avg:.4f}', 'acc': f'{acc_meter.avg:.2f}%'})
+            pbar.set_postfix({
+                'loss': f'{loss_meter.avg:.4f}', 
+                'acc': f'{acc_meter.avg:.2f}%'
+            })
         
         return loss_meter.avg, acc_meter.avg
     
@@ -113,8 +170,13 @@ class AttentionTrainer:
                 attention_mask = batch['question']['attention_mask'].to(self.device)
                 labels = batch['answer'].to(self.device)
                 
-                logits = self.model(images, input_ids, attention_mask)
-                loss = self.criterion(logits, labels)
+                if self.use_amp:
+                    with autocast():
+                        logits = self.model(images, input_ids, attention_mask)
+                        loss = self.criterion(logits, labels)
+                else:
+                    logits = self.model(images, input_ids, attention_mask)
+                    loss = self.criterion(logits, labels)
                 
                 predictions = torch.argmax(logits, dim=1)
                 acc = calculate_accuracy(predictions, labels)
@@ -122,12 +184,16 @@ class AttentionTrainer:
                 loss_meter.update(loss.item(), images.size(0))
                 acc_meter.update(acc, images.size(0))
                 
-                pbar.set_postfix({'loss': f'{loss_meter.avg:.4f}', 'acc': f'{acc_meter.avg:.2f}%'})
+                pbar.set_postfix({
+                    'loss': f'{loss_meter.avg:.4f}', 
+                    'acc': f'{acc_meter.avg:.2f}%'
+                })
         
         return loss_meter.avg, acc_meter.avg
     
     def save_checkpoint(self, epoch, val_acc, is_best):
         model_state = self.model.module.state_dict() if self.is_parallel else self.model.state_dict()
+        
         checkpoint = {
             'epoch': epoch,
             'model_state_dict': model_state,
@@ -144,7 +210,7 @@ class AttentionTrainer:
     
     def train(self):
         print("\n" + "=" * 60)
-        print("Training Attention VQA Model")
+        print("Fast Attention VQA Training")
         print("=" * 60)
         
         for epoch in range(1, self.num_epochs + 1):
@@ -154,7 +220,7 @@ class AttentionTrainer:
             val_loss, val_acc = self.validate(epoch)
             
             self.scheduler.step()
-            lr = self.optimizer.param_groups[1]['lr']  # New layers LR
+            lr = self.optimizer.param_groups[1]['lr']
             
             self.history['train_loss'].append(train_loss)
             self.history['train_acc'].append(train_acc)
@@ -184,6 +250,12 @@ def parse_args():
     parser.add_argument('--learning_rate', type=float, default=5e-4)
     parser.add_argument('--num_epochs', type=int, default=40)
     parser.add_argument('--num_attention_heads', type=int, default=8)
+    parser.add_argument('--gradient_accumulation_steps', type=int, default=2,
+                        help='Accumulate gradients to simulate larger batch size')
+    parser.add_argument('--no_amp', action='store_true',
+                        help='Disable mixed precision training')
+    parser.add_argument('--no_multi_gpu', action='store_true',
+                        help='Disable multi-GPU training')
     parser.add_argument('--device', type=str, default='cuda')
     parser.add_argument('--checkpoint_dir', type=str, default=None)
     parser.add_argument('--seed', type=int, default=42)
@@ -196,8 +268,18 @@ def main():
     torch.manual_seed(args.seed)
     np.random.seed(args.seed)
     
-    print("=" * 60)
-    print("Attention-Based VQA Training")
+    # Check GPU info
+    if torch.cuda.is_available():
+        print("\n" + "=" * 60)
+        print("GPU Information")
+        print("=" * 60)
+        print(f"Number of GPUs: {torch.cuda.device_count()}")
+        for i in range(torch.cuda.device_count()):
+            print(f"  GPU {i}: {torch.cuda.get_device_name(i)}")
+            print(f"    Memory: {torch.cuda.get_device_properties(i).total_memory / 1e9:.2f} GB")
+    
+    print("\n" + "=" * 60)
+    print("Fast Attention-Based VQA Training")
     print("=" * 60)
     
     # Paths
@@ -222,10 +304,30 @@ def main():
         generator=torch.Generator().manual_seed(args.seed)
     )
     
-    train_loader = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True, num_workers=4, pin_memory=True)
-    val_loader = DataLoader(val_ds, batch_size=args.batch_size, shuffle=False, num_workers=4, pin_memory=True)
+    # DataLoaders with optimized settings
+    train_loader = DataLoader(
+        train_ds, 
+        batch_size=args.batch_size, 
+        shuffle=True, 
+        num_workers=4,  # Parallel data loading
+        pin_memory=True,  # Faster GPU transfer
+        persistent_workers=True,  # Keep workers alive
+        prefetch_factor=2,  # Prefetch batches
+    )
+    val_loader = DataLoader(
+        val_ds, 
+        batch_size=args.batch_size * 2,  # Larger batch for validation
+        shuffle=False, 
+        num_workers=4, 
+        pin_memory=True,
+        persistent_workers=True,
+    )
     
-    # Model with attention
+    print(f"\nDataset: {total} samples (Train: {train_size}, Val: {val_size}, Test: {test_size})")
+    print(f"Number of classes: {num_classes}")
+    print(f"Effective batch size: {args.batch_size * args.gradient_accumulation_steps}")
+    
+    # Model
     model = AttentionVQAModel(
         num_classes=num_classes,
         num_attention_heads=args.num_attention_heads,
@@ -233,12 +335,20 @@ def main():
     )
     
     # Checkpoint
-    checkpoint_dir = Path(args.checkpoint_dir) if args.checkpoint_dir else config.paths.checkpoints_dir / "attention"
+    checkpoint_dir = Path(args.checkpoint_dir) if args.checkpoint_dir else config.paths.checkpoints_dir / "attention_fast"
     
     # Train
-    trainer = AttentionTrainer(
-        model, train_loader, val_loader,
-        args.device, args.learning_rate, args.num_epochs, checkpoint_dir
+    trainer = FastAttentionTrainer(
+        model, 
+        train_loader, 
+        val_loader,
+        args.device, 
+        args.learning_rate, 
+        args.num_epochs, 
+        checkpoint_dir,
+        use_amp=not args.no_amp,
+        use_multi_gpu=not args.no_multi_gpu,
+        gradient_accumulation_steps=args.gradient_accumulation_steps,
     )
     
     trainer.train()
