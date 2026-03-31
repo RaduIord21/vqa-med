@@ -341,12 +341,14 @@ def parse_args():
                         help='Device to use (cuda or cpu)')
     parser.add_argument('--seed', type=int, default=42,
                         help='Random seed')
-    parser.add_argument('--use_gated_fusion', action='store_true', default=True,
-                        help='Use gated fusion mechanism')
     parser.add_argument('--temperature_init', type=float, default=0.5,
                         help='Initial temperature for fusion scaling (lower=sharper)')
     parser.add_argument('--visual_weight', type=float, default=0.4,
                         help='Weight for visual features in retrieval (0-1, higher=more visual)')
+    parser.add_argument('--top_k_docs', type=int, default=3,
+                        help='Number of documents to retrieve')
+    parser.add_argument('--use_gated_fusion', action='store_true', default=True,
+                        help='Use gated fusion mechanism')
     
     return parser.parse_args()
 
