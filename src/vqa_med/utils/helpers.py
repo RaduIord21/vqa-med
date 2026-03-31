@@ -203,12 +203,19 @@ def calculate_accuracy(predictions: torch.Tensor, targets: torch.Tensor) -> floa
     Calculate classification accuracy.
     
     Args:
-        predictions: Predicted class indices [batch_size]
+        predictions: Predicted class indices [batch_size] or logits [batch_size, num_classes]
         targets: True class indices [batch_size]
         
     Returns:
         Accuracy as percentage
     """
+    # Accept either class indices or raw logits.
+    if predictions.ndim > 1:
+        predictions = torch.argmax(predictions, dim=1)
+
+    if targets.ndim > 1:
+        targets = targets.squeeze(-1)
+
     correct = (predictions == targets).sum().item()
     total = targets.size(0)
     return 100.0 * correct / total
