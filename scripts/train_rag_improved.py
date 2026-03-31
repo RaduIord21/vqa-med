@@ -195,7 +195,8 @@ class ImprovedRAGTrainer:
             
             # Metrics
             with torch.no_grad():
-                acc = calculate_accuracy(logits.detach(), labels)
+                predictions = torch.argmax(logits.detach(), dim=1)
+                acc = calculate_accuracy(predictions, labels)
                 loss_meter.update(loss.detach().item() * self.gradient_accumulation_steps, images.size(0))
                 acc_meter.update(acc, images.size(0))
             
@@ -226,7 +227,8 @@ class ImprovedRAGTrainer:
             )
             loss = self.criterion(logits, labels)
             
-            acc = calculate_accuracy(logits, labels)
+            predictions = torch.argmax(logits, dim=1)
+            acc = calculate_accuracy(predictions, labels)
             loss_meter.update(loss.item(), images.size(0))
             acc_meter.update(acc, images.size(0))
             
