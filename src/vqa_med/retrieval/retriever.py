@@ -1,15 +1,19 @@
 """
 Medical retriever for VQA with RAG.
+Enhanced with visual-aware retrieval capabilities.
 """
 from typing import List, Dict, Optional
 from pathlib import Path
+import torch
+import numpy as np
 
 from .knowledge_base import MedicalKnowledgeBase
 
 
 class MedicalRetriever:
     """
-    Retriever that combines question and image context for medical VQA.
+    Retriever that combines question, image, and context for medical VQA.
+    Supports visual-aware retrieval using image embeddings.
     """
     
     def __init__(
@@ -17,48 +21,166 @@ class MedicalRetriever:
         knowledge_base: MedicalKnowledgeBase,
         top_k: int = 3,
         rerank: bool = False,
+        use_visual_context: bool = True,
+        visual_weight: float = 0.3,
     ):
         """
         Args:
             knowledge_base: Medical knowledge base
             top_k: Number of documents to retrieve
-            rerank: Whether to rerank results (future enhancement)
+            rerank: Whether to rerank results
+            use_visual_context: Whether to use image features for retrieval
+            visual_weight: Weight for visual features in hybrid retrieval (0-1)
         """
         self.kb = knowledge_base
         self.top_k = top_k
         self.rerank = rerank
+        self.use_visual_context = use_visual_context
+        self.visual_weight = visual_weight
         
         print(f"Medical Retriever initialized:")
         print(f"  Top-K: {top_k}")
         print(f"  Reranking: {rerank}")
+        print(f"  Visual-aware retrieval: {use_visual_context}")
+        if use_visual_context:
+            print(f"  Visual weight: {visual_weight}")
     
     def retrieve(
         self,
         question: str,
         image_caption: Optional[str] = None,
+        image_features: Optional[torch.Tensor] = None,
     ) -> List[Dict]:
         """
-        Retrieve relevant medical knowledge.
+        Retrieve relevant medical knowledge with optional visual context.
         
         Args:
             question: VQA question
             image_caption: Optional image caption for context
+            image_features: Optional image embeddings for visual-aware retrieval
             
         Returns:
             List of retrieved documents
         """
-        # Combine question and caption for better retrieval
+        # Combine question and caption
         if image_caption:
-            query = f"{question} Context: {image_caption}"
+            query = f"{question} Image: {image_caption}"
         else:
             query = question
         
-        # Retrieve
-        results = self.kb.search(query, top_k=self.top_k)
+        # Standard text-based retrieval
+        results = self.kb.search(query, top_k=self.top_k * 2)  # Get more for potential reranking
         
-        # TODO: Add reranking if enabled
+        # Visual-aware retrieval if image features provided
+        if self.use_visual_context and image_features is not None:
+            results = self._rerank_with_visual(results, image_features)
+        
+        # Keep only top-k
+        results = results[:self.top_k]
         
         return results
+    
+    def _rerank_with_visual(
+        self,
+        results: List[Dict],
+        image_features: torch.Tensor,
+    ) -> List[Dict]:
+        """
+        Rerank retrieved documents using visual image features.
+        
+        Higher visual similarity + lower text distance = better ranking.
+        
+        Args:
+            results: Initial retrieval results with scores
+            image_features: Image embeddings [batch_size, dim]
+            
+        Returns:
+            Reranked results
+        """
+        try:
+            # Get image embeddings from knowledge base embedder
+            image_emb = image_features.detach().cpu().numpy().astype('float32')
+            
+            # Pool image features if batch
+            if len(image_emb.shape) > 1:
+                image_emb = image_emb.mean(axis=0, keepdims=True)
+            
+            # Get document embeddings for comparison
+            doc_texts = [r['text'] for r in results]
+            doc_embeddings = self.kb.embedder.encode(
+                doc_texts,
+                convert_to_numpy=True
+            ).astype('float32')
+            
+            # Compute visual similarity (negative distance -> higher similarity is better)
+            # Using cosine similarity between image and document embeddings
+            from sklearn.metrics.pairwise import cosine_similarity
+            visual_similarity = cosine_similarity(image_emb, doc_embeddings)[0]
+            
+            # Normalize scores (lower text distance is better, higher visual similarity is better)
+            text_scores = np.array([r['score'] for r in results])
+            text_scores = (text_scores - text_scores.min()) / (text_scores.max() - text_scores.min() + 1e-8)
+            
+            visual_scores = (visual_similarity - visual_similarity.min()) / (visual_similarity.max() - visual_similarity.min() + 1e-8)
+            
+            # Hybrid ranking: combine text and visual scores
+            # Lower text score is better, higher visual score is better
+            combined_scores = (1 - self.visual_weight) * (1 - text_scores) + self.visual_weight * visual_scores
+            
+            # Rerank results
+            sorted_indices = np.argsort(-combined_scores)
+            reranked_results = [results[i] for i in sorted_indices]
+            
+            # Add reranking scores to metadata
+            for idx, i in enumerate(sorted_indices):
+                reranked_results[idx]['rerank_score'] = float(combined_scores[i])
+            
+            return reranked_results
+            
+        except Exception as e:
+            print(f"Warning: Visual reranking failed ({e}). Using original results.")
+            return results
+    
+    def retrieve_with_fallback(
+        self,
+        question: str,
+        image_caption: Optional[str] = None,
+        image_features: Optional[torch.Tensor] = None,
+    ) -> List[Dict]:
+        """
+        Retrieve with fallback queries for better coverage.
+        
+        If initial retrieval returns few results, try expanding the query.
+        """
+        results = self.retrieve(question, image_caption, image_features)
+        
+        # If we got few results, try alternative queries
+        if len(results) < self.top_k:
+            # Try broader search without specific terms
+            broad_question = self._broaden_query(question)
+            if broad_question != question:
+                additional = self.kb.search(broad_question, top_k=self.top_k - len(results))
+                # Remove duplicates
+                result_texts = {r['text'] for r in results}
+                for doc in additional:
+                    if doc['text'] not in result_texts:
+                        results.append(doc)
+                        if len(results) >= self.top_k:
+                            break
+        
+        return results[:self.top_k]
+    
+    @staticmethod
+    def _broaden_query(question: str) -> str:
+        """Create a broader version of the question by removing specific terms."""
+        # Simple broadening: keep only important words
+        stop_words = {'is', 'the', 'a', 'an', 'are', 'in', 'on', 'at', 'to', 'for', 'of', 'by', 'with'}
+        words = question.lower().split()
+        important_words = [w for w in words if w not in stop_words and len(w) > 3]
+        
+        if len(important_words) < len(words):
+            return " ".join(important_words[:3])  # Return top 3 important words
+        return question
     
     def format_context(self, retrieved_docs: List[Dict]) -> str:
         """
@@ -78,3 +200,11 @@ class MedicalRetriever:
             context_parts.append(f"[{i}] {doc['text']}")
         
         return " ".join(context_parts)
+    
+    def get_retrieval_stats(self) -> Dict:
+        """Get retrieval statistics."""
+        return {
+            'total_documents': len(self.kb.documents),
+            'top_k': self.top_k,
+            'visual_aware': self.use_visual_context,
+        }
