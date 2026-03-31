@@ -23,6 +23,7 @@ class MedicalRetriever:
         rerank: bool = False,
         use_visual_context: bool = True,
         visual_weight: float = 0.3,
+        use_query_expansion: bool = False,
     ):
         """
         Args:
@@ -31,17 +32,20 @@ class MedicalRetriever:
             rerank: Whether to rerank results
             use_visual_context: Whether to use image features for retrieval
             visual_weight: Weight for visual features in hybrid retrieval (0-1)
+            use_query_expansion: Whether to expand queries with medical synonyms
         """
         self.kb = knowledge_base
         self.top_k = top_k
         self.rerank = rerank
         self.use_visual_context = use_visual_context
         self.visual_weight = visual_weight
+        self.use_query_expansion = use_query_expansion
         
         print(f"Medical Retriever initialized:")
         print(f"  Top-K: {top_k}")
         print(f"  Reranking: {rerank}")
         print(f"  Visual-aware retrieval: {use_visual_context}")
+        print(f"  Query expansion: {use_query_expansion}")
         if use_visual_context:
             print(f"  Visual weight: {visual_weight}")
     
@@ -84,12 +88,13 @@ class MedicalRetriever:
             all_results[r['text']] = r
         
         # Query 2: Expanded query with medical synonyms/context
-        expanded_query = self._expand_query(question)
-        if expanded_query != query:
-            results2 = self.kb.search(expanded_query, top_k=self.top_k)
-            for r in results2:
-                if r['text'] not in all_results:
-                    all_results[r['text']] = r
+        if self.use_query_expansion:
+            expanded_query = self._expand_query(question)
+            if expanded_query != query:
+                results2 = self.kb.search(expanded_query, top_k=self.top_k)
+                for r in results2:
+                    if r['text'] not in all_results:
+                        all_results[r['text']] = r
         
         results = list(all_results.values())
         

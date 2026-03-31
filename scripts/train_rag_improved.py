@@ -47,7 +47,8 @@ class ImprovedRAGTrainer:
         gradient_accumulation_steps,
         checkpoint_dir,
         temperature_init: float = 1.0,
-        visual_weight: float = 0.3,
+        visual_weight: float = 0.25,
+        learn_temperature: bool = False,
         use_amp=True,
     ):
         self.device = torch.device(device if torch.cuda.is_available() else "cpu")
@@ -59,11 +60,12 @@ class ImprovedRAGTrainer:
         self.gradient_accumulation_steps = gradient_accumulation_steps
         self.use_amp = use_amp and torch.cuda.is_available()
         self.visual_weight = visual_weight
+        self.learn_temperature = learn_temperature
         
         self.criterion = nn.CrossEntropyLoss()
         
-        # Temperature scaling parameter (learnable)
-        self.temperature = nn.Parameter(torch.tensor(temperature_init, dtype=torch.float32))
+        # Temperature scaling parameter (optional learnable)
+        self.temperature = nn.Parameter(torch.tensor(temperature_init, dtype=torch.float32), requires_grad=learn_temperature)
         
         # Optimizer with different learning rates for pretrained vs new layers
         pretrained_params = list(self.model.vision_encoder.parameters()) + \
@@ -77,11 +79,14 @@ class ImprovedRAGTrainer:
         if hasattr(self.model, 'fusion_gate') and self.model.fusion_gate is not None:
             new_params.extend(list(self.model.fusion_gate.parameters()))
         
-        self.optimizer = optim.AdamW([
-            {'params': pretrained_params, 'lr': lr * 0.1},  # Lower LR for pretrained
-            {'params': new_params, 'lr': lr},  # Higher LR for new components
-            {'params': [self.temperature], 'lr': lr * 0.5}  # Moderate LR for temperature
-        ], weight_decay=0.01)
+        optim_groups = [
+            {'params': pretrained_params, 'lr': lr * 0.1},
+            {'params': new_params, 'lr': lr},
+        ]
+        if self.learn_temperature:
+            optim_groups.append({'params': [self.temperature], 'lr': lr * 0.5})
+
+        self.optimizer = optim.AdamW(optim_groups, weight_decay=0.01)
         
         self.scheduler = optim.lr_scheduler.CosineAnnealingLR(
             self.optimizer, T_max=epochs, eta_min=1e-7
@@ -105,6 +110,7 @@ class ImprovedRAGTrainer:
         print(f"Improved RAG Trainer initialized on {self.device}")
         print(f"Gradient accumulation steps: {gradient_accumulation_steps}")
         print(f"Temperature init: {temperature_init}")
+        print(f"Learn temperature: {learn_temperature}")
         print(f"Visual weight: {visual_weight}")
         if self.use_amp:
             print("✓ Mixed precision (FP16) enabled")
@@ -177,8 +183,8 @@ class ImprovedRAGTrainer:
                         images, input_ids, attention_mask,
                         context_input_ids, context_attention_mask
                     )
-                    # Apply temperature scaling
-                    scaled_logits = logits / self.temperature.clamp(min=0.1)
+                    # Optional temperature scaling during optimization
+                    scaled_logits = logits / self.temperature.clamp(min=0.1) if self.learn_temperature else logits
                     loss = self.criterion(scaled_logits, labels)
                     loss = loss / self.gradient_accumulation_steps
                 
@@ -188,7 +194,7 @@ class ImprovedRAGTrainer:
                     images, input_ids, attention_mask,
                     context_input_ids, context_attention_mask
                 )
-                scaled_logits = logits / self.temperature.clamp(min=0.1)
+                scaled_logits = logits / self.temperature.clamp(min=0.1) if self.learn_temperature else logits
                 loss = self.criterion(scaled_logits, labels)
                 loss = loss / self.gradient_accumulation_steps
                 loss.backward()
@@ -239,8 +245,8 @@ class ImprovedRAGTrainer:
                 images, input_ids, attention_mask,
                 context_input_ids, context_attention_mask
             )
-            # Apply temperature scaling
-            scaled_logits = logits / self.temperature.clamp(min=0.1)
+            # Keep evaluation consistent with training objective
+            scaled_logits = logits / self.temperature.clamp(min=0.1) if self.learn_temperature else logits
             loss = self.criterion(scaled_logits, labels)
             
             predictions = torch.argmax(logits, dim=1)
@@ -341,12 +347,16 @@ def parse_args():
                         help='Device to use (cuda or cpu)')
     parser.add_argument('--seed', type=int, default=42,
                         help='Random seed')
-    parser.add_argument('--temperature_init', type=float, default=0.5,
+    parser.add_argument('--temperature_init', type=float, default=1.0,
                         help='Initial temperature for fusion scaling (lower=sharper)')
-    parser.add_argument('--visual_weight', type=float, default=0.4,
+    parser.add_argument('--visual_weight', type=float, default=0.25,
                         help='Weight for visual features in retrieval (0-1, higher=more visual)')
+    parser.add_argument('--learn_temperature', action='store_true',
+                        help='Enable learnable temperature scaling during training')
     parser.add_argument('--top_k_docs', type=int, default=3,
                         help='Number of documents to retrieve')
+    parser.add_argument('--use_query_expansion', action='store_true',
+                        help='Enable synonym-based query expansion in retrieval')
     parser.add_argument('--use_gated_fusion', action='store_true', default=True,
                         help='Use gated fusion mechanism')
     
@@ -410,6 +420,7 @@ def main():
         top_k_docs=args.top_k_docs,
         use_gated_fusion=args.use_gated_fusion,
     )
+    model.retriever.use_query_expansion = args.use_query_expansion
     
     # Create trainer
     trainer = ImprovedRAGTrainer(
@@ -424,6 +435,7 @@ def main():
         checkpoint_dir=args.checkpoint_dir,
         temperature_init=args.temperature_init,
         visual_weight=args.visual_weight,
+        learn_temperature=args.learn_temperature,
         use_amp=True,
     )
     
