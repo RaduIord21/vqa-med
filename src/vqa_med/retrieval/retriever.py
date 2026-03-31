@@ -121,6 +121,10 @@ class MedicalRetriever:
                 doc_texts,
                 convert_to_numpy=True
             ).astype('float32')
+
+            # Align dimensions if vision and text embedding spaces differ
+            if image_emb.shape[1] != doc_embeddings.shape[1]:
+                image_emb = self._align_embedding_dim(image_emb, doc_embeddings.shape[1])
             
             # Compute visual similarity (negative distance -> higher similarity is better)
             # Using cosine similarity between image and document embeddings
@@ -150,6 +154,35 @@ class MedicalRetriever:
         except Exception as e:
             print(f"Warning: Visual reranking failed ({e}). Using original results.")
             return results
+
+    @staticmethod
+    def _align_embedding_dim(embedding: np.ndarray, target_dim: int) -> np.ndarray:
+        """
+        Align embedding dimensionality with deterministic pooling/interpolation.
+
+        This is used to compare ViT image embeddings (e.g. 768-dim) with
+        sentence-transformer embeddings (e.g. 384-dim) for cosine similarity.
+        """
+        current_dim = embedding.shape[1]
+        if current_dim == target_dim:
+            return embedding
+
+        if current_dim > target_dim:
+            # If divisible, average contiguous groups for stable downsampling.
+            if current_dim % target_dim == 0:
+                factor = current_dim // target_dim
+                return embedding.reshape(embedding.shape[0], target_dim, factor).mean(axis=2)
+
+            # Fallback: linear interpolation down to target dimension.
+            src_idx = np.linspace(0, current_dim - 1, num=current_dim)
+            dst_idx = np.linspace(0, current_dim - 1, num=target_dim)
+            return np.stack([
+                np.interp(dst_idx, src_idx, row) for row in embedding
+            ]).astype('float32')
+
+        # If smaller, zero-pad to target size.
+        pad = np.zeros((embedding.shape[0], target_dim - current_dim), dtype=embedding.dtype)
+        return np.concatenate([embedding, pad], axis=1)
     
     def retrieve_with_fallback(
         self,
