@@ -346,7 +346,7 @@ def parse_args():
     parser.add_argument('--temperature_init', type=float, default=0.5,
                         help='Initial temperature for fusion scaling (lower=sharper)')
     parser.add_argument('--visual_weight', type=float, default=0.4,
-                        help='Weight for visual features in retrieval (0-1, higher=more visual)'))
+                        help='Weight for visual features in retrieval (0-1, higher=more visual)')
     
     return parser.parse_args()
 
