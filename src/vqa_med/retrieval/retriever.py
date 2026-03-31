@@ -98,11 +98,21 @@ class MedicalRetriever:
             Reranked results
         """
         try:
+            if not results:
+                return results
+
             # Get image embeddings from knowledge base embedder
             image_emb = image_features.detach().cpu().numpy().astype('float32')
-            
-            # Pool image features if batch
-            if len(image_emb.shape) > 1:
+
+            # Convert vision features to a single 2D embedding [1, dim].
+            # Common input shape from ViT is [B, num_patches, dim].
+            if image_emb.ndim == 3:
+                # Mean-pool over patch tokens, keep batch dimension.
+                image_emb = image_emb.mean(axis=1)
+            if image_emb.ndim == 1:
+                image_emb = image_emb[None, :]
+            elif image_emb.ndim == 2 and image_emb.shape[0] > 1:
+                # If more than one sample sneaks in, average to one vector.
                 image_emb = image_emb.mean(axis=0, keepdims=True)
             
             # Get document embeddings for comparison
