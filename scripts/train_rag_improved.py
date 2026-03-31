@@ -302,6 +302,8 @@ def parse_args():
     parser = argparse.ArgumentParser(description='Train Improved RAG-VQA')
     parser.add_argument('--data_path', type=str, default='data/processed/vqa_rad_closed.csv',
                         help='Path to VQA dataset CSV')
+    parser.add_argument('--image_dir', type=str, default=None,
+                        help='Path to VQA image directory')
     parser.add_argument('--knowledge_base_path', type=str, 
                         default='data/knowledge/medical_kb',
                         help='Path to medical knowledge base')
@@ -348,9 +350,15 @@ def main():
     print(f"Top-K docs: {args.top_k_docs}")
     print("=" * 60 + "\n")
     
+    # Resolve paths
+    data_csv = Path(args.data_path)
+    image_dir = Path(args.image_dir) if args.image_dir else config.paths.raw_data / "VQA-RAD" / "images"
+
     # Load dataset
     print("Loading dataset...")
-    dataset = MedicalVQADataset(args.data_path, transform=get_image_transforms())
+    tokenizer = get_tokenizer(config.model.text_model)
+    transform = get_image_transforms(config.model.image_size, is_training=True)
+    dataset = MedicalVQADataset(data_csv, image_dir, transform, tokenizer)
     train_size = int(0.8 * len(dataset))
     val_size = len(dataset) - train_size
     train_dataset, val_dataset = random_split(dataset, [train_size, val_size])
@@ -362,7 +370,7 @@ def main():
     print(f"  Train: {len(train_dataset)} | Val: {len(val_dataset)}")
     
     # Get number of classes
-    num_classes = len(dataset.answer_vocab)
+    num_classes = dataset.get_num_classes()
     print(f"✓ Number of classes: {num_classes}")
     
     # Build knowledge base if not exists
@@ -381,7 +389,6 @@ def main():
     )
     
     # Create trainer
-    tokenizer = get_tokenizer()
     trainer = ImprovedRAGTrainer(
         model=model,
         train_loader=train_loader,
