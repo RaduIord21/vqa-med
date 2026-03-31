@@ -33,7 +33,7 @@ from vqa_med.config import config
 
 
 class ImprovedRAGTrainer:
-    """Trainer for Improved RAG-VQA model with better fusion and visual-aware retrieval."""
+    """Trainer for Improved RAG-VQA model with temperature scaling and visual weight tuning."""
     
     def __init__(
         self, 
@@ -46,6 +46,8 @@ class ImprovedRAGTrainer:
         epochs,
         gradient_accumulation_steps,
         checkpoint_dir,
+        temperature_init: float = 1.0,
+        visual_weight: float = 0.3,
         use_amp=True,
     ):
         self.device = torch.device(device if torch.cuda.is_available() else "cpu")
@@ -56,8 +58,12 @@ class ImprovedRAGTrainer:
         self.num_epochs = epochs
         self.gradient_accumulation_steps = gradient_accumulation_steps
         self.use_amp = use_amp and torch.cuda.is_available()
+        self.visual_weight = visual_weight
         
         self.criterion = nn.CrossEntropyLoss()
+        
+        # Temperature scaling parameter (learnable)
+        self.temperature = nn.Parameter(torch.tensor(temperature_init, dtype=torch.float32))
         
         # Optimizer with different learning rates for pretrained vs new layers
         pretrained_params = list(self.model.vision_encoder.parameters()) + \
@@ -73,7 +79,8 @@ class ImprovedRAGTrainer:
         
         self.optimizer = optim.AdamW([
             {'params': pretrained_params, 'lr': lr * 0.1},  # Lower LR for pretrained
-            {'params': new_params, 'lr': lr}  # Higher LR for new components
+            {'params': new_params, 'lr': lr},  # Higher LR for new components
+            {'params': [self.temperature], 'lr': lr * 0.5}  # Moderate LR for temperature
         ], weight_decay=0.01)
         
         self.scheduler = optim.lr_scheduler.CosineAnnealingLR(
@@ -90,19 +97,22 @@ class ImprovedRAGTrainer:
             'train_acc': [], 
             'val_loss': [], 
             'val_acc': [], 
-            'lr': []
+            'lr': [],
+            'temperature': []
         }
         self.best_val_acc = 0.0
         
         print(f"Improved RAG Trainer initialized on {self.device}")
         print(f"Gradient accumulation steps: {gradient_accumulation_steps}")
+        print(f"Temperature init: {temperature_init}")
+        print(f"Visual weight: {visual_weight}")
         if self.use_amp:
             print("✓ Mixed precision (FP16) enabled")
     
     def process_batch_with_rag(self, batch):
         """
         Process batch and retrieve knowledge for each question.
-        Includes visual-aware retrieval.
+        Includes visual-aware retrieval with tuned visual weight.
         
         Returns:
             Tensors for model forward pass
@@ -119,13 +129,14 @@ class ImprovedRAGTrainer:
             vision_outputs = self.model.vision_encoder(pixel_values=images)
             image_features = vision_outputs.last_hidden_state  # [B, num_patches, hidden_dim]
         
-        # Retrieve knowledge with visual context
+        # Retrieve knowledge with visual context and tuned visual weight
         contexts = []
         for i, question in enumerate(questions):
             img_feat = image_features[i:i+1]  # Keep batch dimension
             retrieved_docs = self.model.retriever.retrieve(
                 question, 
-                image_features=img_feat
+                image_features=img_feat,
+                visual_weight=self.visual_weight  # Use configured visual weight
             )
             context = self.model.retriever.format_context(retrieved_docs)
             contexts.append(context if context else "No relevant information available.")
@@ -145,7 +156,7 @@ class ImprovedRAGTrainer:
         return images, input_ids, attention_mask, labels, context_input_ids, context_attention_mask
     
     def train_epoch(self, epoch):
-        """Train one epoch with gradient accumulation."""
+        """Train one epoch with gradient accumulation and temperature scaling."""
         self.model.train()
         loss_meter = AverageMeter()
         acc_meter = AverageMeter()
@@ -166,7 +177,9 @@ class ImprovedRAGTrainer:
                         images, input_ids, attention_mask,
                         context_input_ids, context_attention_mask
                     )
-                    loss = self.criterion(logits, labels)
+                    # Apply temperature scaling
+                    scaled_logits = logits / self.temperature.clamp(min=0.1)
+                    loss = self.criterion(scaled_logits, labels)
                     loss = loss / self.gradient_accumulation_steps
                 
                 self.scaler.scale(loss).backward()
@@ -175,7 +188,8 @@ class ImprovedRAGTrainer:
                     images, input_ids, attention_mask,
                     context_input_ids, context_attention_mask
                 )
-                loss = self.criterion(logits, labels)
+                scaled_logits = logits / self.temperature.clamp(min=0.1)
+                loss = self.criterion(scaled_logits, labels)
                 loss = loss / self.gradient_accumulation_steps
                 loss.backward()
             
@@ -201,16 +215,16 @@ class ImprovedRAGTrainer:
                 acc_meter.update(acc, images.size(0))
             
             pbar.set_postfix({
-                'loss': loss_meter.avg,
-                'acc': acc_meter.avg,
-                'lr': self.optimizer.param_groups[1]['lr']  # New layers LR
+                'loss': f'{loss_meter.avg:.4f}',
+                'acc': f'{acc_meter.avg:.2f}%',
+                'temp': f'{self.temperature.item():.3f}'
             })
         
         return loss_meter.avg, acc_meter.avg
     
     @torch.no_grad()
     def evaluate(self):
-        """Evaluate on validation set."""
+        """Evaluate on validation set with temperature scaling."""
         self.model.eval()
         loss_meter = AverageMeter()
         acc_meter = AverageMeter()
@@ -225,7 +239,9 @@ class ImprovedRAGTrainer:
                 images, input_ids, attention_mask,
                 context_input_ids, context_attention_mask
             )
-            loss = self.criterion(logits, labels)
+            # Apply temperature scaling
+            scaled_logits = logits / self.temperature.clamp(min=0.1)
+            loss = self.criterion(scaled_logits, labels)
             
             predictions = torch.argmax(logits, dim=1)
             acc = calculate_accuracy(predictions, labels)
@@ -252,11 +268,12 @@ class ImprovedRAGTrainer:
             self.history['val_loss'].append(val_loss)
             self.history['val_acc'].append(val_acc)
             self.history['lr'].append(self.optimizer.param_groups[1]['lr'])
+            self.history['temperature'].append(self.temperature.item())
             
             print(f"\nEpoch {epoch}")
             print(f"  Train Loss: {train_loss:.4f} | Train Acc: {train_acc:.4f}")
             print(f"  Val Loss: {val_loss:.4f} | Val Acc: {val_acc:.4f}")
-            print(f"  LR: {self.optimizer.param_groups[1]['lr']:.2e}")
+            print(f"  Temperature: {self.temperature.item():.3f}")
             
             # Save best model
             if val_acc > self.best_val_acc:
@@ -326,8 +343,10 @@ def parse_args():
                         help='Random seed')
     parser.add_argument('--use_gated_fusion', action='store_true', default=True,
                         help='Use gated fusion mechanism')
-    parser.add_argument('--top_k_docs', type=int, default=3,
-                        help='Number of documents to retrieve')
+    parser.add_argument('--temperature_init', type=float, default=0.5,
+                        help='Initial temperature for fusion scaling (lower=sharper)')
+    parser.add_argument('--visual_weight', type=float, default=0.4,
+                        help='Weight for visual features in retrieval (0-1, higher=more visual)'))
     
     return parser.parse_args()
 
@@ -401,6 +420,8 @@ def main():
         epochs=args.num_epochs,
         gradient_accumulation_steps=args.gradient_accumulation_steps,
         checkpoint_dir=args.checkpoint_dir,
+        temperature_init=args.temperature_init,
+        visual_weight=args.visual_weight,
         use_amp=True,
     )
     

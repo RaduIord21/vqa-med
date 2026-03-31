@@ -50,26 +50,48 @@ class MedicalRetriever:
         question: str,
         image_caption: Optional[str] = None,
         image_features: Optional[torch.Tensor] = None,
+        visual_weight: Optional[float] = None,
     ) -> List[Dict]:
         """
-        Retrieve relevant medical knowledge with optional visual context.
+        Retrieve relevant medical knowledge with optional visual context and multi-query expansion.
         
         Args:
             question: VQA question
             image_caption: Optional image caption for context
             image_features: Optional image embeddings for visual-aware retrieval
+            visual_weight: Optional override for visual weight (0-1)
             
         Returns:
             List of retrieved documents
         """
+        # Use provided visual weight or default
+        original_weight = self.visual_weight
+        if visual_weight is not None:
+            self.visual_weight = visual_weight
+
         # Combine question and caption
         if image_caption:
             query = f"{question} Image: {image_caption}"
         else:
             query = question
         
-        # Standard text-based retrieval
-        results = self.kb.search(query, top_k=self.top_k * 2)  # Get more for potential reranking
+        # Multi-query retrieval for better coverage
+        all_results = {}  # Use dict to avoid duplicates with key=doc_text
+        
+        # Query 1: Original question
+        results1 = self.kb.search(query, top_k=self.top_k * 2)
+        for r in results1:
+            all_results[r['text']] = r
+        
+        # Query 2: Expanded query with medical synonyms/context
+        expanded_query = self._expand_query(question)
+        if expanded_query != query:
+            results2 = self.kb.search(expanded_query, top_k=self.top_k)
+            for r in results2:
+                if r['text'] not in all_results:
+                    all_results[r['text']] = r
+        
+        results = list(all_results.values())
         
         # Visual-aware retrieval if image features provided
         if self.use_visual_context and image_features is not None:
@@ -77,6 +99,9 @@ class MedicalRetriever:
         
         # Keep only top-k
         results = results[:self.top_k]
+        
+        # Restore original visual weight
+        self.visual_weight = original_weight
         
         return results
     
@@ -212,6 +237,44 @@ class MedicalRetriever:
                             break
         
         return results[:self.top_k]
+    
+    @staticmethod
+    def _expand_query(question: str) -> str:
+        """
+        Expand query with medical synonyms and related terms for better retrieval coverage.
+        
+        Examples:
+        - "Is there pneumonia?" -> "pneumonia infiltrate consolidation infection"
+        - "Where is the abnormality?" -> "abnormality finding lesion pathology"
+        """
+        medical_synonyms = {
+            'pneumonia': 'pneumonia infiltrate consolidation infection opacity',
+            'abnormality': 'abnormality finding lesion pathology',
+            'fracture': 'fracture break fracture line fragment',
+            'mass': 'mass lesion nodule tumor growth',
+            'nodule': 'nodule mass lesion opacity finding',
+            'edema': 'edema swelling fluid accumulation pulmonary',
+            'effusion': 'effusion fluid accumulation collection pleural',
+            'hemorrhage': 'hemorrhage bleeding hematoma blood',
+            'enlarged': 'enlarged enlarged dilated hypertrophied big',
+            'normal': 'normal unremarkable no abnormality clear',
+            'chest': 'chest thorax pulmonary lung thoracic',
+            'abdomen': 'abdomen abdominal belly stomach visceral',
+            'heart': 'heart cardiac cardiac chamber ventricle',
+            'bone': 'bone skeletal osseous bony',
+            'liver': 'liver hepatic hepatomegaly abdominal',
+            'kidney': 'kidney renal nephric urinary',
+            'lung': 'lung pulmonary respiratory air',
+        }
+        
+        expanded = question.lower()
+        for term, synonyms in medical_synonyms.items():
+            if term in expanded:
+                # Replace first occurrence with synonyms
+                expanded = expanded.replace(term, synonyms, 1)
+                return expanded
+        
+        return question
     
     @staticmethod
     def _broaden_query(question: str) -> str:
