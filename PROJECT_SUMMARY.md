@@ -198,7 +198,7 @@ attended_vision = cross_attention(
 
 ---
 
-### **Phase 5: RAG Implementation (Currently Underperforming)**
+### **Phase 5: RAG Implementation (Implemented + Debugged)**
 
 #### **RAG-Enhanced VQA Model**
 **Script:** `train_rag.py`  
@@ -233,20 +233,41 @@ Image + Question + Context → Cross-Attention → Answer
 - Multiple papers attached by user (not fully analyzed yet)
 - Need to extract better RAG fusion strategies from literature
 
-**Improved RAG Created (Not Yet Tested):**
+**Improved RAG Implemented and Tested:**
 - `models/rag_vqa_improved.py`
-- Cross-attention between question and context
-- Gated fusion mechanism
-- Three-way fusion (question + context + vision)
+- `scripts/train_rag_improved.py`
+- `src/vqa_med/retrieval/retriever.py`
+
+**Major updates completed in this session:**
+1. Visual-aware retrieval added and debugged (shape + dimension fixes)
+2. Knowledge base expanded (from ~35 to 140+ documents)
+3. Multi-query retrieval expansion added (now optional)
+4. Learnable temperature scaling added to trainer (now optional)
+5. Argument/parser and dataset init issues fixed in `train_rag_improved.py`
+6. Accuracy utility hardened for logits vs class-index input
+
+**Recent RAG runs:**
+- Tuned/experimental run: **68.46%**
+- Aggressive run (query expansion + temperature learning): **66.54%**
+
+**Interpretation:**
+- RAG is close to baseline but not consistently better yet
+- Aggressive retrieval/training tricks can reduce performance on this small dataset
+- Stable ablation is required (enable one enhancement at a time)
 
 ---
 
 ## **Current State**
 
 ### **Best Model Performance**
-- **Model:** Attention-based VQA (cross-attention fusion)
-- **Validation Accuracy:** 69.07%
+- **Best overall model:** Attention-based VQA (cross-attention fusion)
+- **Validation Accuracy:** **69.07%**
 - **Checkpoint:** `/content/drive/MyDrive/vqa-checkpoints-attention-fast/checkpoint_best.pth`
+
+### **Current RAG Status (as of March 31, 2026)**
+- **Script:** `scripts/train_rag_improved.py`
+- **Most recent scores:** 68.46% and 66.54% (depending on settings)
+- **Conclusion:** RAG pipeline is now runnable and debuggable, but still below 69.07% baseline
 
 ### **GPU Utilization**
 - **Available:** A100 80GB
@@ -259,25 +280,29 @@ Image + Question + Context → Cross-Attention → Answer
 ✅ Comprehensive evaluation tools  
 ✅ Dataset analysis pipelines  
 ✅ CLI-based training scripts  
+✅ `train_rag_improved.py` end-to-end training now runs without runtime crashes  
+✅ Visual reranking no longer fails due to tensor shape/dimension mismatch  
 
-### **What's Not Working**
-❌ RAG implementation (65% vs 69% baseline)  
+### **What's Not Working Yet**
+❌ RAG still not consistently beating 69.07% baseline  
 ❌ Position questions (POS) still at 0% accuracy  
 ❌ Non-yes/no questions underperform  
-❌ Knowledge base too small for effective RAG  
+❌ Retrieval quality still noisy for some question types  
 
 ---
 
-## **Next Steps (Pending Implementation)**
+## **Next Steps (Tomorrow Plan)**
 
-### **Priority 1: Fix RAG Implementation**
-**Status:** Improved model created but not tested
+### **Priority 1: RAG Ablation (Stable First)**
+**Status:** Ready to run tomorrow
 
-**Options:**
-1. **Larger knowledge base** - Extract from medical textbooks, RadLex, PubMed
-2. **Better fusion** - Use improved RAG model with gated fusion
-3. **Visual-aware retrieval** - Include image features in query
-4. **Move on if not effective** - RAG may not help with this small dataset
+Run in this order:
+1. Stable RAG (no query expansion, no learned temperature)
+2. + Query expansion only
+3. + Learn temperature only
+4. + Both (only if 2 and 3 help)
+
+Goal: identify which enhancement helps instead of combining everything at once.
 
 ### **Priority 2: Image Captioning**
 **Status:** Not started
@@ -356,17 +381,26 @@ from google.colab import drive
 drive.mount('/content/drive')
 ```
 
-### **2. Continue from Best Model**
+### **2. Continue from Best Model / RAG Ablation**
 ```bash
-# Train improved RAG model
-!uv run python scripts/train_rag.py \
-  --knowledge_base_path data/knowledge/medical_kb \
+# Stable improved RAG run (recommended first run tomorrow)
+!uv run python scripts/train_rag_improved.py \
+  --data_path data/processed/vqa_rad_closed.csv \
+  --image_dir data/raw/VQA-RAD/images \
   --batch_size 12 \
+  --gradient_accumulation_steps 2 \
+  --learning_rate 5e-4 \
   --num_epochs 40 \
-  --checkpoint_dir /content/drive/MyDrive/vqa-checkpoints-rag-improved
+  --checkpoint_dir /content/drive/MyDrive/vqa-checkpoints-rag-stable \
+  --device cuda \
+  --visual_weight 0.25 \
+  --temperature_init 1.0 \
+  --top_k_docs 3 \
+  --use_gated_fusion
 
-# Or implement image captioning next
-# (see TODO.md for detailed steps)
+# Optional ablation toggles for later runs:
+#   --use_query_expansion
+#   --learn_temperature
 ```
 
 ### **3. Evaluate Any Model**
@@ -394,7 +428,8 @@ drive.mount('/content/drive')
 - **Training:** `scripts/train_attention_fast.py` (current best)
 - **Evaluation:** `scripts/evaluate_model.py`
 - **Analysis:** `scripts/analyze_dataset.py`
-- **RAG:** `scripts/train_rag.py` (needs improvement)
+- **RAG baseline:** `scripts/train_rag.py`
+- **RAG improved:** `scripts/train_rag_improved.py` (active experiment script)
 
 ---
 
@@ -424,21 +459,20 @@ drive.mount('/content/drive')
 
 ## **Outstanding Questions & Decisions**
 
-### **1. RAG: Fix or Skip?**
-- Current RAG underperforms (65% vs 69%)
-- Need much larger knowledge base (100s of documents)
-- Alternative: Move to image captioning instead
+### **1. RAG: Continue or Skip?**
+- Current improved RAG is near baseline but unstable (66.54% to 68.46%)
+- Need ablation clarity before deciding final direction
 
-**Recommendation:** Try improved RAG model once, if still poor, skip to captioning
+**Recommendation:** Run ablation matrix tomorrow; if best run stays <69%, switch focus to captioning.
 
 ### **2. What to Implement Next?**
 **Options:**
-- A) Fix RAG with larger KB + better fusion
+- A) Finish RAG ablation and lock best settings
 - B) Implement image captioning (likely higher impact)
 - C) Adversarial prompting (test robustness)
 - D) Leverage more GPU memory (bigger models/batches)
 
-**Recommendation:** Image captioning → Adversarial prompting → Better RAG
+**Recommendation:** RAG ablation (short) → captioning (main path)
 
 ### **3. Target Accuracy?**
 - Current: 69.07%
@@ -529,11 +563,32 @@ trainer.train()
 # Build knowledge base for RAG
 !uv run python scripts/build_knowledge_base.py --use_sample
 
-# Train RAG model
-!uv run python scripts/train_rag.py \
-  --knowledge_base_path data/knowledge/medical_kb \
-  --batch_size 12 --num_epochs 40
+# Train improved RAG model (stable config for tomorrow)
+!uv run python scripts/train_rag_improved.py \
+  --data_path data/processed/vqa_rad_closed.csv \
+  --image_dir data/raw/VQA-RAD/images \
+  --batch_size 12 \
+  --gradient_accumulation_steps 2 \
+  --learning_rate 5e-4 \
+  --num_epochs 40 \
+  --checkpoint_dir /content/drive/MyDrive/vqa-checkpoints-rag-stable \
+  --device cuda \
+  --visual_weight 0.25 \
+  --temperature_init 1.0 \
+  --top_k_docs 3 \
+  --use_gated_fusion
 ```
+
+---
+
+## **Tomorrow Session Handoff (Copy/Paste Checklist)**
+
+1. Run the stable command above and save output logs/checkpoint path.
+2. Compare best val acc against 69.07 attention baseline.
+3. If stable run improves, test one toggle at a time:
+   - `--use_query_expansion`
+   - `--learn_temperature`
+4. Stop RAG tuning if best result is still below 69.07 and move to image captioning.
 
 ---
 
