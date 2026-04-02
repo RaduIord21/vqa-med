@@ -7,10 +7,12 @@ from pathlib import Path
 from typing import Callable, Dict, List, Optional, Sequence, Tuple
 
 import json
+import numpy as np
 import pandas as pd
 import torch
 from torch.utils.data import DataLoader, random_split
 from tqdm import tqdm
+from sklearn.metrics import confusion_matrix, f1_score
 
 from vqa_med.config import config
 from vqa_med.data import MedicalVQADataset
@@ -52,8 +54,12 @@ class BenchmarkResult:
     model_type: str
     status: str
     accuracy: Optional[float]
+    macro_f1: Optional[float]
+    weighted_f1: Optional[float]
     num_samples: int
     checkpoint_path: Optional[str]
+    inference_path: Optional[str] = None
+    confusion_matrix_path: Optional[str] = None
     notes: str = ""
 
 
@@ -100,8 +106,9 @@ class CaptionVQADataset(MedicalVQADataset):
 class BenchmarkRunner:
     """Run a consistent benchmark across VQA model variants."""
 
-    def __init__(self, specs: Sequence[BenchmarkSpec]):
+    def __init__(self, specs: Sequence[BenchmarkSpec], output_dir: Optional[Path] = None):
         self.specs = list(specs)
+        self.output_dir = Path(output_dir) if output_dir is not None else None
         self.tokenizer = get_tokenizer(config.model.text_model)
 
     def run(self) -> List[BenchmarkResult]:
@@ -113,6 +120,7 @@ class BenchmarkRunner:
     def save_report(self, results: Sequence[BenchmarkResult], output_dir: Path) -> Path:
         output_dir = Path(output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
+        self.output_dir = output_dir
 
         payload = [asdict(result) for result in results]
         with open(output_dir / "benchmark_results.json", "w") as handle:
@@ -129,8 +137,12 @@ class BenchmarkRunner:
                 model_type=spec.model_type,
                 status="skipped",
                 accuracy=None,
+                macro_f1=None,
+                weighted_f1=None,
                 num_samples=0,
                 checkpoint_path=str(spec.checkpoint_path) if spec.checkpoint_path else None,
+                inference_path=None,
+                confusion_matrix_path=None,
                 notes=spec.notes or "Model marked unavailable.",
             )
 
@@ -140,8 +152,12 @@ class BenchmarkRunner:
                 model_type=spec.model_type,
                 status="skipped",
                 accuracy=None,
+                macro_f1=None,
+                weighted_f1=None,
                 num_samples=0,
                 checkpoint_path=None,
+                inference_path=None,
+                confusion_matrix_path=None,
                 notes="Missing checkpoint path.",
             )
 
@@ -152,8 +168,12 @@ class BenchmarkRunner:
                 model_type=spec.model_type,
                 status="skipped",
                 accuracy=None,
+                macro_f1=None,
+                weighted_f1=None,
                 num_samples=0,
                 checkpoint_path=str(checkpoint_path),
+                inference_path=None,
+                confusion_matrix_path=None,
                 notes="Checkpoint file not found.",
             )
 
@@ -164,8 +184,12 @@ class BenchmarkRunner:
                 model_type=spec.model_type,
                 status="skipped",
                 accuracy=None,
+                macro_f1=None,
+                weighted_f1=None,
                 num_samples=0,
                 checkpoint_path=str(checkpoint_path),
+                inference_path=None,
+                confusion_matrix_path=None,
                 notes="Dataset is empty.",
             )
 
@@ -178,22 +202,35 @@ class BenchmarkRunner:
                 model_type=spec.model_type,
                 status="skipped",
                 accuracy=None,
+                macro_f1=None,
+                weighted_f1=None,
                 num_samples=0,
                 checkpoint_path=str(checkpoint_path),
+                inference_path=None,
+                confusion_matrix_path=None,
                 notes=f"Unsupported split '{spec.split}'.",
             )
 
         try:
             _, predictor = self._build_predictor(spec, dataset.get_num_classes(), checkpoint_path)
-            accuracy, sample_count = self._evaluate(spec, eval_subset, predictor)
+            accuracy, macro_f1, weighted_f1, sample_count, inference_path, confusion_path = self._evaluate(
+                spec,
+                eval_subset,
+                predictor,
+                checkpoint_path,
+            )
         except Exception as exc:
             return BenchmarkResult(
                 name=spec.name,
                 model_type=spec.model_type,
                 status="error",
                 accuracy=None,
+                macro_f1=None,
+                weighted_f1=None,
                 num_samples=0,
                 checkpoint_path=str(checkpoint_path),
+                inference_path=None,
+                confusion_matrix_path=None,
                 notes=f"{type(exc).__name__}: {exc}",
             )
 
@@ -202,8 +239,12 @@ class BenchmarkRunner:
             model_type=spec.model_type,
             status="ok",
             accuracy=accuracy,
+            macro_f1=macro_f1,
+            weighted_f1=weighted_f1,
             num_samples=sample_count,
             checkpoint_path=str(checkpoint_path),
+            inference_path=inference_path,
+            confusion_matrix_path=confusion_path,
             notes=spec.notes,
         )
 
@@ -299,7 +340,7 @@ class BenchmarkRunner:
 
         raise ValueError(f"Unsupported model_type: {spec.model_type}")
 
-    def _evaluate(self, spec: BenchmarkSpec, dataset, predictor: Callable):
+    def _evaluate(self, spec: BenchmarkSpec, dataset, predictor: Callable, checkpoint_path: Path):
         loader = DataLoader(
             dataset,
             batch_size=spec.batch_size,
@@ -309,14 +350,88 @@ class BenchmarkRunner:
 
         correct = 0
         total = 0
+        all_predictions: List[int] = []
+        all_labels: List[int] = []
+        all_prediction_texts: List[str] = []
+        all_label_texts: List[str] = []
+        all_questions: List[str] = []
+
+        base_dataset = dataset.dataset if hasattr(dataset, "dataset") else dataset
+        idx_to_answer = base_dataset.idx_to_answer
+        class_labels = [idx_to_answer[idx] for idx in range(len(idx_to_answer))]
 
         for batch in tqdm(loader, desc=f"Benchmarking {spec.name}"):
             predictions, labels = predictor(batch)
             correct += (predictions == labels).sum().item()
             total += labels.size(0)
+            all_predictions.extend(predictions.tolist())
+            all_labels.extend(labels.tolist())
+            all_prediction_texts.extend([idx_to_answer[idx] for idx in predictions.tolist()])
+            all_label_texts.extend(batch["answer_text"])
+            all_questions.extend(batch["question_text"])
 
         accuracy = 100.0 * correct / total if total else 0.0
-        return accuracy, total
+        macro_f1 = f1_score(all_labels, all_predictions, average="macro", zero_division=0) if total else None
+        weighted_f1 = f1_score(all_labels, all_predictions, average="weighted", zero_division=0) if total else None
+
+        confusion = confusion_matrix(all_labels, all_predictions) if total else np.zeros((0, 0), dtype=int)
+        inference_path, confusion_path = self._save_inference_artifacts(
+            spec=spec,
+            checkpoint_path=checkpoint_path,
+            questions=all_questions,
+            label_indices=all_labels,
+            predicted_indices=all_predictions,
+            label_texts=all_label_texts,
+            predicted_texts=all_prediction_texts,
+            confusion=confusion,
+            class_labels=class_labels,
+        )
+
+        return accuracy, macro_f1, weighted_f1, total, inference_path, confusion_path
+
+    def _save_inference_artifacts(
+        self,
+        spec: BenchmarkSpec,
+        checkpoint_path: Path,
+        questions: List[str],
+        label_indices: List[int],
+        predicted_indices: List[int],
+        label_texts: List[str],
+        predicted_texts: List[str],
+        confusion: np.ndarray,
+        class_labels: List[str],
+    ) -> Tuple[Optional[str], Optional[str]]:
+        if self.output_dir is None:
+            return None, None
+
+        model_dir = self.output_dir / spec.name
+        model_dir.mkdir(parents=True, exist_ok=True)
+
+        inference_df = pd.DataFrame(
+            {
+                "question": questions,
+                "ground_truth_label": label_indices,
+                "ground_truth_text": label_texts,
+                "predicted_label": predicted_indices,
+                "predicted_text": predicted_texts,
+                "correct": [p == l for p, l in zip(predicted_indices, label_indices)],
+            }
+        )
+        inference_path = model_dir / "inference.csv"
+        inference_df.to_csv(inference_path, index=False)
+
+        confusion_path = model_dir / "confusion_matrix.json"
+        with open(confusion_path, "w") as handle:
+            json.dump(
+                {
+                    "labels": class_labels,
+                    "matrix": confusion.tolist(),
+                },
+                handle,
+                indent=2,
+            )
+
+        return str(inference_path), str(confusion_path)
 
     @staticmethod
     def _predict_baseline(model, batch, device):
@@ -449,7 +564,7 @@ def build_default_specs(
 
 
 def run_benchmark_suite(specs: Sequence[BenchmarkSpec], output_dir: Optional[Path] = None):
-    runner = BenchmarkRunner(specs)
+    runner = BenchmarkRunner(specs, output_dir=output_dir)
     results = runner.run()
 
     if output_dir is not None:

@@ -53,26 +53,24 @@ def main():
         top_k_docs=args.top_k_docs,
     )
 
-    runner = BenchmarkRunner(specs)
+    output_dir = Path(args.output_dir) if args.output_dir else None
+    runner = BenchmarkRunner(specs, output_dir=output_dir)
     results = runner.run()
 
     for result in results:
         accuracy = f"{result.accuracy:.2f}%" if result.accuracy is not None else "N/A"
-        print(f"{result.name}: {result.status} | {accuracy} | samples={result.num_samples} | {result.notes}")
+        macro_f1 = f"{result.macro_f1:.4f}" if result.macro_f1 is not None else "N/A"
+        weighted_f1 = f"{result.weighted_f1:.4f}" if result.weighted_f1 is not None else "N/A"
+        print(
+            f"{result.name}: {result.status} | acc={accuracy} | macro_f1={macro_f1} | "
+            f"weighted_f1={weighted_f1} | samples={result.num_samples} | {result.notes}"
+        )
 
     if args.output_dir:
-        runner.save_report(results, Path(args.output_dir))
+        runner.save_report(results, output_dir)
         print(f"Saved benchmark report to {args.output_dir}")
 
 
 if __name__ == "__main__":
     main()
 
-# !uv run python scripts/benchmark_models.py \
-#   --data_csv data/processed/vqa_rad_closed_with_captions.csv \
-#   --image_dir data/raw/VQA-RAD/images \
-#   --baseline_checkpoint /path/to/baseline.pth \
-#   --rag_checkpoint /path/to/rag_best.pth \
-#   --caption_checkpoint /path/to/caption_best.pth \
-#   --knowledge_base_path data/knowledge/medical_kb \
-#   --output_dir outputs/benchmarks
