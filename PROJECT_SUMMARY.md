@@ -1,9 +1,14 @@
 # Medical VQA Project - Development Session Summary
 
-**Date:** March 31, 2026  
+**Date:** March 31 - April 2, 2026 (updated April 2 baseline lock)  
 **Project:** Medical Visual Question Answering System  
 **Developer:** Radu  
 **Environment:** Google Colab Pro+ (A100 80GB GPU)
+
+### **April 2 Baseline Lock Update**
+- Caption-augmented model reached **69.59%** validation accuracy using cached captions, `--learning_rate 1e-4`, and `--caption_max_length 48`.
+- This currently exceeds the previous attention baseline (**69.07%**) and is the working baseline for adversarial prompting experiments.
+- Next decision criterion: verify reproducibility around 69.59% before large robustness training sweeps.
 
 ---
 
@@ -42,6 +47,7 @@ vqa-med/
 │   ├── models/
 │   │   ├── base_vqa.py           # Simple concatenation model
 │   │   ├── attention_vqa.py      # Cross-attention model ✅ BEST
+│   │   ├── caption_vqa.py        # Caption-augmented VQA model (new)
 │   │   ├── rag_vqa.py            # RAG-enhanced (underperforming)
 │   │   └── rag_vqa_improved.py   # Improved RAG (not tested)
 │   ├── data/
@@ -60,6 +66,7 @@ vqa-med/
 │   ├── train_specialized.py      # Question-type specific models
 │   ├── train_attention.py        # Attention model training
 │   ├── train_attention_fast.py   # Optimized training (FP16)
+│   ├── train_caption.py          # Caption-augmented training (new)
 │   ├── train_rag.py              # RAG training
 │   ├── evaluate_model.py         # Comprehensive evaluation
 │   ├── analyze_dataset.py        # Dataset analysis
@@ -257,17 +264,54 @@ Image + Question + Context → Cross-Attention → Answer
 
 ---
 
+### **Phase 6: Image Captioning Integration (Implemented + First Run)**
+
+#### **Caption-Augmented VQA Model (April 1, 2026)**
+**New components added:**
+1. `src/vqa_med/models/caption_vqa.py` - Caption-aware fusion model
+2. `scripts/train_caption.py` - End-to-end trainer with optional BLIP caption generation
+3. `src/vqa_med/models/__init__.py` updated to export `CaptionVQAModel`
+
+**Architecture Summary:**
+1. ViT image encoder
+2. Shared BioBERT encoder for question and caption text
+3. Cross-attention (question -> image patches)
+4. Gated fusion of question CLS + attended vision CLS + caption CLS
+5. MLP classifier for answer prediction
+
+**Training Pipeline Features:**
+- Optional automatic caption generation (`--generate_captions`) using BLIP
+- Caption CSV caching to avoid regenerating captions every run
+- Mixed precision (FP16) training support
+- Gradient accumulation and cosine LR scheduling
+
+**First Captioning Result:**
+- **Best validation accuracy: 66.49%**
+- This is **below** the current attention baseline (**69.07%**)
+
+**Current interpretation:**
+- Captioning path is integrated and runnable, but first configuration underperformed
+- Need controlled caption ablations (learning rate, caption length, cached captions only)
+
+---
+
 ## **Current State**
 
 ### **Best Model Performance**
-- **Best overall model:** Attention-based VQA (cross-attention fusion)
-- **Validation Accuracy:** **69.07%**
-- **Checkpoint:** `/content/drive/MyDrive/vqa-checkpoints-attention-fast/checkpoint_best.pth`
+- **Best overall model:** Caption-augmented VQA
+- **Validation Accuracy:** **69.59%**
+- **Run config:** cached captions, `--learning_rate 1e-4`, `--caption_max_length 48`, `--batch_size 12`, `--gradient_accumulation_steps 2`, `--num_epochs 40`
+- **Current reference threshold:** 69.07% (attention baseline)
 
 ### **Current RAG Status (as of March 31, 2026)**
 - **Script:** `scripts/train_rag_improved.py`
 - **Most recent scores:** 68.46% and 66.54% (depending on settings)
 - **Conclusion:** RAG pipeline is now runnable and debuggable, but still below 69.07% baseline
+
+### **Current Captioning Status (as of April 2, 2026)**
+- **Script:** `scripts/train_caption.py`
+- **Most recent best score:** **69.59%**
+- **Conclusion:** Captioning now beats the attention baseline in at least one controlled run; next step is reproducibility checks before adversarial training.
 
 ### **GPU Utilization**
 - **Available:** A100 80GB
@@ -282,38 +326,35 @@ Image + Question + Context → Cross-Attention → Answer
 ✅ CLI-based training scripts  
 ✅ `train_rag_improved.py` end-to-end training now runs without runtime crashes  
 ✅ Visual reranking no longer fails due to tensor shape/dimension mismatch  
+✅ Caption-augmented model + training script implemented and Colab runnable  
+✅ Caption ablation run reached 69.59% and exceeded the 69.07% attention baseline  
 
 ### **What's Not Working Yet**
 ❌ RAG still not consistently beating 69.07% baseline  
 ❌ Position questions (POS) still at 0% accuracy  
 ❌ Non-yes/no questions underperform  
 ❌ Retrieval quality still noisy for some question types  
+❌ Caption improvement not yet confirmed as stable across repeated runs  
 
 ---
 
 ## **Next Steps (Tomorrow Plan)**
 
-### **Priority 1: RAG Ablation (Stable First)**
-**Status:** Ready to run tomorrow
+### **Priority 1: Captioning Ablation (Now Active)**
+**Status:** In progress (first run completed)
 
 Run in this order:
-1. Stable RAG (no query expansion, no learned temperature)
-2. + Query expansion only
-3. + Learn temperature only
-4. + Both (only if 2 and 3 help)
+1. Cached captions only (no generation during training)
+2. Lower LR (`2e-4`)
+3. Shorter caption length (`--caption_max_length 32` or 48)
+4. Keep same data split/seed for clean comparison
 
-Goal: identify which enhancement helps instead of combining everything at once.
+Goal: determine whether captioning can beat 69.07% with stable settings.
 
-### **Priority 2: Image Captioning**
-**Status:** Not started
+### **Priority 2: RAG Decision Gate**
+**Status:** Paused unless captioning stalls
 
-**Approach:**
-- Generate intermediate text descriptions of images
-- Use captions to help answer questions
-- Can use BLIP-2 or similar medical image captioning model
-- Creates text-based reasoning pathway
-
-**Expected Benefit:** +5-8% accuracy improvement
+If caption ablation does not beat baseline, run one final stable RAG sanity check and then pick the better of RAG vs captioning for next development cycle.
 
 ### **Priority 3: Adversarial Prompting**
 **Status:** Not started
@@ -358,6 +399,7 @@ Goal: identify which enhancement helps instead of combining everything at once.
 - **Visual features not learned** without proper attention mechanisms
 - **Small medical VQA datasets are challenging** - need smart architectures
 - **Position questions need special handling** - spatial reasoning is hard
+- **Captioning integration alone is not sufficient** - fusion/training settings matter
 
 ---
 
@@ -426,6 +468,7 @@ drive.mount('/content/drive')
 
 ### **Key Scripts**
 - **Training:** `scripts/train_attention_fast.py` (current best)
+- **Caption training:** `scripts/train_caption.py` (new)
 - **Evaluation:** `scripts/evaluate_model.py`
 - **Analysis:** `scripts/analyze_dataset.py`
 - **RAG baseline:** `scripts/train_rag.py`
@@ -577,18 +620,46 @@ trainer.train()
   --temperature_init 1.0 \
   --top_k_docs 3 \
   --use_gated_fusion
+
+# Train caption-augmented model (active path)
+!uv run python scripts/train_caption.py \
+  --data_csv data/processed/vqa_rad_closed.csv \
+  --image_dir data/raw/VQA-RAD/images \
+  --generate_captions \
+  --caption_cache_file /content/drive/MyDrive/vqa-med-data/vqa_rad_closed_with_captions.csv \
+  --caption_column caption \
+  --caption_batch_size 8 \
+  --batch_size 12 \
+  --gradient_accumulation_steps 2 \
+  --learning_rate 5e-4 \
+  --num_epochs 40 \
+  --checkpoint_dir /content/drive/MyDrive/vqa-checkpoints-caption \
+  --device cuda
+
+# Caption ablation run (tomorrow start here)
+!uv run python scripts/train_caption.py \
+  --data_csv /content/drive/MyDrive/vqa-med-data/vqa_rad_closed_with_captions.csv \
+  --image_dir data/raw/VQA-RAD/images \
+  --caption_column caption \
+  --caption_max_length 48 \
+  --batch_size 12 \
+  --gradient_accumulation_steps 2 \
+  --learning_rate 2e-4 \
+  --num_epochs 40 \
+  --checkpoint_dir /content/drive/MyDrive/vqa-checkpoints-caption-lr2e4 \
+  --device cuda
 ```
 
 ---
 
 ## **Tomorrow Session Handoff (Copy/Paste Checklist)**
 
-1. Run the stable command above and save output logs/checkpoint path.
-2. Compare best val acc against 69.07 attention baseline.
-3. If stable run improves, test one toggle at a time:
-   - `--use_query_expansion`
-   - `--learn_temperature`
-4. Stop RAG tuning if best result is still below 69.07 and move to image captioning.
+1. Keep the attention baseline (69.07%) as the decision threshold.
+2. Continue captioning from cached captions first (no regeneration during train).
+3. Run LR + caption-length ablations one at a time and log best val accuracy for each run.
+4. Stop caption tuning if best run remains <69.07 after controlled ablations.
+5. If stopped, run one final stable RAG sanity run and choose the stronger path.
+6. Update this file with: command used, best val acc, checkpoint path, and next decision.
 
 ---
 

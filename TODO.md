@@ -17,6 +17,12 @@
 - ⚠️ Classification-based approach limits answer vocabulary
 - ⚠️ Class imbalance (yes/no answers dominate)
 
+**Current Best Results:**
+- Cross-attention baseline: 69.07% validation accuracy
+- Caption-augmented model: 69.59% validation accuracy on the best run with cached captions, `--learning_rate 1e-4`, and `--caption_max_length 48`
+- Baseline lock: 69.59% is the active clean baseline for adversarial prompting work
+- Next goal: verify that captioning can reproduce 69.59% and stay above 69.07% across nearby settings
+
 ---
 
 ## Next Steps - Model Improvements
@@ -183,33 +189,31 @@
 
 ---
 
-### **Step 12: Add Image Captioning as Preprocessing**
+### **Step 12: Validate Captioning as a Stable Improvement**
 
-**Priority:** LOW-MEDIUM  
+**Priority:** HIGH  
 **Estimated Time:** 2-3 hours
 
-**Purpose:** Convert VQA to text-based QA using image descriptions
+**Purpose:** Confirm whether captioning is a real improvement over the 69.07% attention baseline.
 
 **Implementation Plan:**
-1. **Medical Image Captioning**
-   - Use pretrained medical captioning model
-   - Or fine-tune general captioning model (BLIP, GIT) on medical images
-   - Generate detailed image descriptions
+1. **Run stability checks with the same split/seed**
+   - Re-run the best caption configuration at least 2-3 times
+   - Keep the same train/val/test split seed for direct comparison
 
-2. **Caption-Based VQA**
-   - Use caption as intermediate representation
-   - Answer questions based on generated captions
-   - Ensemble with vision-based model
+2. **Ablate nearby settings one at a time**
+   - Test `--caption_max_length 48`
+   - Test `--learning_rate 5e-4`
+   - Test `--learning_rate 1e-4`
+   - Keep cached captions fixed during the ablation set
 
-3. **Hybrid Approach**
-   - Combine visual features + captions
-   - Use caption to guide visual attention
-   - Better interpretability
+3. **Decide whether captioning is a real path forward**
+   - Continue only if captioning beats 69.07% consistently
+   - Otherwise fall back to a final stable RAG sanity run
 
 **Files to Create:**
-- `src/vqa_med/captioning/medical_captioner.py` - Image captioning model
 - `src/vqa_med/models/caption_vqa.py` - Caption-based VQA
-- `scripts/generate_captions.py` - Batch caption generation
+- `scripts/train_caption.py` - Caption-augmented training and ablation entrypoint
 
 **Pretrained Models to Consider:**
 - BLIP-2 (general captioning, can fine-tune)
@@ -293,11 +297,12 @@
 ## Success Metrics
 
 **Current Baseline:**
-- Overall Accuracy: ~XX% (measure after Step 7)
-- By question type: TBD
+- Overall Accuracy: 69.07%
+- Caption best run: 69.59%
+- By question type: see `scripts/evaluate_model.py`
 
 **Target After Improvements:**
-- Overall Accuracy: >70%
+- Overall Accuracy: >70% with stable validation across seeds/settings
 - CLOSED questions: >90%
 - MODALITY/PLANE: >80%
 - ABN/ORGAN: >60%

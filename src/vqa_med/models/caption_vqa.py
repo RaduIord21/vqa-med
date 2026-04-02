@@ -92,20 +92,17 @@ class CaptionVQAModel(nn.Module):
         )
         question_features = question_outputs.last_hidden_state
         question_cls = question_features[:, 0, :]
-
         caption_outputs = self.text_encoder(
             input_ids=caption_input_ids,
             attention_mask=caption_attention_mask,
         )
         caption_cls = caption_outputs.last_hidden_state[:, 0, :]
-
         attended_vision, _ = self.cross_attention(
             query=question_features,
             key=vision_features,
             value=vision_features,
         )
         attended_vision_cls = attended_vision[:, 0, :]
-
         combined = torch.cat([question_cls, attended_vision_cls, caption_cls], dim=1)
         gated = combined * self.feature_gate(combined)
         fused = self.fusion(gated)

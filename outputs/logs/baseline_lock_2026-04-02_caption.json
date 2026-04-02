@@ -1,0 +1,36 @@
+{
+  "baseline_id": "caption_v1_2026-04-02",
+  "date": "2026-04-02",
+  "model_family": "caption_vqa",
+  "script": "scripts/train_caption.py",
+  "metric": {
+    "name": "best_validation_accuracy",
+    "value": 69.59,
+    "unit": "percent"
+  },
+  "comparison_thresholds": {
+    "attention_baseline_val_acc": 69.07,
+    "min_clean_accuracy_for_adversarial_runs": 68.5,
+    "max_allowed_clean_drop_after_adversarial": 1.0
+  },
+  "dataset": {
+    "data_csv": "/content/drive/MyDrive/vqa-med-data/vqa_rad_closed_with_captions.csv",
+    "image_dir": "data/raw/VQA-RAD/images",
+    "caption_column": "caption"
+  },
+  "training_config": {
+    "caption_max_length": 48,
+    "batch_size": 12,
+    "gradient_accumulation_steps": 2,
+    "learning_rate": 1e-4,
+    "num_epochs": 40,
+    "device": "cuda"
+  },
+  "reported_command": "!uv run python scripts/train_caption.py --data_csv /content/drive/MyDrive/vqa-med-data/vqa_rad_closed_with_captions.csv --image_dir data/raw/VQA-RAD/images --caption_column caption --caption_max_length 48 --batch_size 12 --gradient_accumulation_steps 2 --learning_rate 1e-4 --num_epochs 40 --checkpoint_dir /content/drive/MyDrive/vqa-checkpoints-caption-lr2e4-len32 --device cuda",
+  "checkpoint": {
+    "reported_checkpoint_dir": "/content/drive/MyDrive/vqa-checkpoints-caption-lr2e4-len32",
+    "note": "Directory name does not match hyperparameters in this run. Prefer using a corrected path name for future locked runs.",
+    "recommended_checkpoint_dir_name": "/content/drive/MyDrive/vqa-checkpoints-caption-lr1e4-len48"
+  },
+  "status": "locked_for_adversarial_feature_start"
+}
