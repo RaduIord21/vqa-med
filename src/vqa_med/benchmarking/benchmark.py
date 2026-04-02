@@ -56,6 +56,7 @@ class BenchmarkResult:
     accuracy: Optional[float]
     macro_f1: Optional[float]
     weighted_f1: Optional[float]
+    per_class_f1: Optional[Dict[str, float]]
     num_samples: int
     checkpoint_path: Optional[str]
     inference_path: Optional[str] = None
@@ -139,6 +140,7 @@ class BenchmarkRunner:
                 accuracy=None,
                 macro_f1=None,
                 weighted_f1=None,
+                per_class_f1=None,
                 num_samples=0,
                 checkpoint_path=str(spec.checkpoint_path) if spec.checkpoint_path else None,
                 inference_path=None,
@@ -154,6 +156,7 @@ class BenchmarkRunner:
                 accuracy=None,
                 macro_f1=None,
                 weighted_f1=None,
+                per_class_f1=None,
                 num_samples=0,
                 checkpoint_path=None,
                 inference_path=None,
@@ -170,6 +173,7 @@ class BenchmarkRunner:
                 accuracy=None,
                 macro_f1=None,
                 weighted_f1=None,
+                per_class_f1=None,
                 num_samples=0,
                 checkpoint_path=str(checkpoint_path),
                 inference_path=None,
@@ -186,6 +190,7 @@ class BenchmarkRunner:
                 accuracy=None,
                 macro_f1=None,
                 weighted_f1=None,
+                per_class_f1=None,
                 num_samples=0,
                 checkpoint_path=str(checkpoint_path),
                 inference_path=None,
@@ -204,6 +209,7 @@ class BenchmarkRunner:
                 accuracy=None,
                 macro_f1=None,
                 weighted_f1=None,
+                per_class_f1=None,
                 num_samples=0,
                 checkpoint_path=str(checkpoint_path),
                 inference_path=None,
@@ -213,7 +219,7 @@ class BenchmarkRunner:
 
         try:
             _, predictor = self._build_predictor(spec, dataset.get_num_classes(), checkpoint_path)
-            accuracy, macro_f1, weighted_f1, sample_count, inference_path, confusion_path = self._evaluate(
+            accuracy, macro_f1, weighted_f1, per_class_f1, sample_count, inference_path, confusion_path = self._evaluate(
                 spec,
                 eval_subset,
                 predictor,
@@ -227,6 +233,7 @@ class BenchmarkRunner:
                 accuracy=None,
                 macro_f1=None,
                 weighted_f1=None,
+                per_class_f1=None,
                 num_samples=0,
                 checkpoint_path=str(checkpoint_path),
                 inference_path=None,
@@ -241,6 +248,7 @@ class BenchmarkRunner:
             accuracy=accuracy,
             macro_f1=macro_f1,
             weighted_f1=weighted_f1,
+            per_class_f1=per_class_f1,
             num_samples=sample_count,
             checkpoint_path=str(checkpoint_path),
             inference_path=inference_path,
@@ -373,6 +381,11 @@ class BenchmarkRunner:
         accuracy = 100.0 * correct / total if total else 0.0
         macro_f1 = f1_score(all_labels, all_predictions, average="macro", zero_division=0) if total else None
         weighted_f1 = f1_score(all_labels, all_predictions, average="weighted", zero_division=0) if total else None
+        per_class_values = f1_score(all_labels, all_predictions, average=None, zero_division=0) if total else []
+        per_class_f1 = {
+            class_labels[idx]: float(score)
+            for idx, score in enumerate(per_class_values)
+        }
 
         confusion = confusion_matrix(all_labels, all_predictions) if total else np.zeros((0, 0), dtype=int)
         inference_path, confusion_path = self._save_inference_artifacts(
@@ -387,7 +400,7 @@ class BenchmarkRunner:
             class_labels=class_labels,
         )
 
-        return accuracy, macro_f1, weighted_f1, total, inference_path, confusion_path
+        return accuracy, macro_f1, weighted_f1, per_class_f1, total, inference_path, confusion_path
 
     def _save_inference_artifacts(
         self,
@@ -426,6 +439,19 @@ class BenchmarkRunner:
                 {
                     "labels": class_labels,
                     "matrix": confusion.tolist(),
+                },
+                handle,
+                indent=2,
+            )
+
+        with open(model_dir / "per_class_f1.json", "w") as handle:
+            json.dump(
+                {
+                    "labels": class_labels,
+                    "per_class_f1": {
+                        label: float(score)
+                        for label, score in zip(class_labels, f1_score(label_indices, predicted_indices, average=None, zero_division=0))
+                    },
                 },
                 handle,
                 indent=2,
