@@ -74,3 +74,16 @@ def main():
 if __name__ == "__main__":
     main()
 
+# !uv run python scripts/benchmark_models.py \
+#   --data_csv /content/drive/MyDrive/vqa-med-data/vqa_rad_closed_with_captions.csv \
+#   --image_dir data/raw/VQA-RAD/images \
+#   --baseline_checkpoint /content/drive/MyDrive/vqa-checkpoints-attention-fast/checkpoint_best.pth \
+#   --rag_checkpoint /content/drive/MyDrive/vqa-checkpoints-rag-stable/checkpoint_best.pth \
+#   --caption_checkpoint /content/drive/MyDrive/vqa-checkpoints-caption-lr1e4-len48/checkpoint_best.pth \
+#   --knowledge_base_path data/knowledge/medical_kb \
+#   --caption_column caption \
+#   --caption_max_length 48 \
+#   --split val \
+#   --batch_size 12 \
+#   --device cuda \
+#   --output_dir outputs/benchmarks/run_001 
