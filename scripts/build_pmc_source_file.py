@@ -44,6 +44,33 @@ PMC_OA_SEARCH = f"{PMC_EUTILS_BASE}/esearch.fcgi"
 PMC_EFETCH = f"{PMC_EUTILS_BASE}/efetch.fcgi"
 
 
+TOPIC_KEYWORDS = {
+    "radiology": {
+        "x-ray", "xray", "radiograph", "radiographic", "ct", "computed tomography",
+        "mri", "magnetic resonance", "ultrasound", "sonography", "pet", "imaging",
+        "image", "scan", "opacity", "lesion", "nodule", "consolidation", "contrast",
+        "flair", "diffusion", "dwi", "axial", "coronal", "sagittal",
+    },
+    "anatomy": {
+        "anatomy", "anatomical", "organ", "tissue", "artery", "vein", "nerve", "muscle",
+        "lung", "heart", "liver", "kidney", "brain", "spine", "abdomen", "thorax",
+    },
+    "pathology": {
+        "pathology", "disease", "syndrome", "lesion", "tumor", "cancer", "infection",
+        "inflammation", "edema", "hemorrhage", "fracture", "pneumonia", "embolism",
+    },
+    "clinical_basics": {
+        "clinical", "diagnosis", "symptom", "treatment", "therapy", "patient", "history",
+        "risk", "prognosis", "management", "guideline",
+    },
+}
+
+LOW_VALUE_TERMS = {
+    "cost-effectiveness", "quality-adjusted", "questionnaire", "survey", "randomized trial",
+    "protocol", "recruitment", "ethics approval", "informed consent", "registry",
+}
+
+
 @dataclass
 class ArticleRecord:
     text: str
@@ -65,6 +92,20 @@ def text_from_element(element: Optional[ET.Element]) -> str:
 
 def normalize_whitespace(text: str) -> str:
     return " ".join(text.split())
+
+
+def topic_relevance_score(text: str, topic: str) -> int:
+    keywords = TOPIC_KEYWORDS.get(topic.lower())
+    if not keywords:
+        return 1
+
+    lower = text.lower()
+    return sum(1 for keyword in keywords if keyword in lower)
+
+
+def has_low_value_terms(text: str) -> bool:
+    lower = text.lower()
+    return any(term in lower for term in LOW_VALUE_TERMS)
 
 
 def search_pmc_ids(query: str, max_articles: int, api_key: Optional[str] = None) -> List[str]:
@@ -161,6 +202,9 @@ def build_records(
     topic: str,
     api_key: Optional[str] = None,
     delay_seconds: float = 0.34,
+    strict_topic_filter: bool = False,
+    min_topic_hits: int = 1,
+    exclude_low_value: bool = True,
 ) -> List[dict]:
     pmc_ids = search_pmc_ids(query=query, max_articles=max_articles, api_key=api_key)
     output: List[dict] = []
@@ -178,6 +222,15 @@ def build_records(
 
         for record in records:
             normalized_text = normalize_whitespace(record.text)
+
+            if exclude_low_value and has_low_value_terms(normalized_text):
+                continue
+
+            if strict_topic_filter:
+                score = topic_relevance_score(normalized_text, topic)
+                if score < min_topic_hits:
+                    continue
+
             if normalized_text.lower() in seen_text:
                 continue
             seen_text.add(normalized_text.lower())
@@ -199,6 +252,22 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max_articles", type=int, default=100, help="Maximum number of PMC articles to fetch")
     parser.add_argument("--output_file", type=str, default=None, help="JSON output file path")
     parser.add_argument("--api_key", type=str, default=None, help="Optional NCBI API key")
+    parser.add_argument(
+        "--strict_topic_filter",
+        action="store_true",
+        help="Keep only passages strongly matching the selected topic keywords",
+    )
+    parser.add_argument(
+        "--min_topic_hits",
+        type=int,
+        default=2,
+        help="Minimum keyword hits required when strict topic filtering is enabled",
+    )
+    parser.add_argument(
+        "--allow_low_value_terms",
+        action="store_true",
+        help="Allow passages with low-value research-process terms",
+    )
     return parser.parse_args()
 
 
@@ -214,12 +283,18 @@ def main() -> None:
     print(f"Topic: {args.topic}")
     print(f"Max articles: {args.max_articles}")
     print(f"Output: {output_file}")
+    print(f"Strict topic filter: {args.strict_topic_filter}")
+    if args.strict_topic_filter:
+        print(f"Min topic keyword hits: {args.min_topic_hits}")
 
     records = build_records(
         query=args.query,
         max_articles=args.max_articles,
         topic=args.topic,
         api_key=args.api_key,
+        strict_topic_filter=args.strict_topic_filter,
+        min_topic_hits=max(1, args.min_topic_hits),
+        exclude_low_value=not args.allow_low_value_terms,
     )
 
     with open(output_file, "w", encoding="utf-8") as handle:
