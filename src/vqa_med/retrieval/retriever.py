@@ -85,7 +85,9 @@ class MedicalRetriever:
         # Query 1: Original question
         results1 = self.kb.search(query, top_k=self.top_k * 2)
         for r in results1:
-            all_results[r['text']] = r
+            existing = all_results.get(r['text'])
+            if existing is None or r['score'] < existing['score']:
+                all_results[r['text']] = r
         
         # Query 2: Expanded query with medical synonyms/context
         if self.use_query_expansion:
@@ -93,10 +95,12 @@ class MedicalRetriever:
             if expanded_query != query:
                 results2 = self.kb.search(expanded_query, top_k=self.top_k)
                 for r in results2:
-                    if r['text'] not in all_results:
+                    existing = all_results.get(r['text'])
+                    if existing is None or r['score'] < existing['score']:
                         all_results[r['text']] = r
         
-        results = list(all_results.values())
+        # Lower score is better (distance-like score from KB).
+        results = sorted(all_results.values(), key=lambda x: x.get('score', float('inf')))
         
         # Visual-aware retrieval if image features provided
         if self.use_visual_context and image_features is not None:
@@ -308,7 +312,19 @@ class MedicalRetriever:
         
         context_parts = []
         for i, doc in enumerate(retrieved_docs, 1):
-            context_parts.append(f"[{i}] {doc['text']}")
+            meta = doc.get('metadata', {}) or {}
+            source = meta.get('source')
+            topic = meta.get('topic')
+
+            prefix = f"[{i}]"
+            if source and topic:
+                prefix += f" ({topic}; {source})"
+            elif source:
+                prefix += f" ({source})"
+            elif topic:
+                prefix += f" ({topic})"
+
+            context_parts.append(f"{prefix} {doc['text']}")
         
         return " ".join(context_parts)
     

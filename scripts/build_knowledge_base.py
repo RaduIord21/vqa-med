@@ -238,6 +238,22 @@ def parse_args():
     parser.add_argument('--embedding_model', type=str, 
                         default='sentence-transformers/all-MiniLM-L6-v2',
                         help='Sentence transformer model for embeddings')
+    parser.add_argument('--index_type', type=str, default='flatl2',
+                        choices=['flatl2', 'ivfflat', 'hnsw'],
+                        help='FAISS index type')
+    parser.add_argument('--metric', type=str, default='cosine',
+                        choices=['cosine', 'l2'],
+                        help='Retrieval metric used by FAISS index')
+    parser.add_argument('--batch_size', type=int, default=32,
+                        help='Embedding batch size')
+    parser.add_argument('--chunk_size', type=int, default=80,
+                        help='Maximum words per chunk')
+    parser.add_argument('--chunk_overlap', type=int, default=15,
+                        help='Word overlap between chunks')
+    parser.add_argument('--min_words', type=int, default=5,
+                        help='Minimum words required to keep a chunk')
+    parser.add_argument('--disable_dedup', action='store_true',
+                        help='Disable chunk-level deduplication')
     parser.add_argument('--use_sample', action='store_true',
                         help='Use sample medical knowledge (for testing)')
     return parser.parse_args()
@@ -273,14 +289,42 @@ def main():
     print("\nCreating knowledge base...")
     kb = MedicalKnowledgeBase(
         embedding_model=args.embedding_model,
-        index_type='flatl2'
+        index_type=args.index_type,
+        metric=args.metric,
     )
     
     # Add documents
-    kb.add_documents(documents, metadata)
+    kb.add_documents(
+        documents,
+        metadata,
+        batch_size=args.batch_size,
+        chunk_size=args.chunk_size,
+        chunk_overlap=args.chunk_overlap,
+        deduplicate=not args.disable_dedup,
+        min_words=args.min_words,
+    )
     
     # Save
     kb.save(output_dir)
+
+    # Save build-quality report
+    quality_report = {
+        'input_documents': len(documents),
+        'indexed_documents': len(kb.documents),
+        'embedding_model': args.embedding_model,
+        'index_type': args.index_type,
+        'metric': args.metric,
+        'chunk_size': args.chunk_size,
+        'chunk_overlap': args.chunk_overlap,
+        'min_words': args.min_words,
+        'deduplicate': not args.disable_dedup,
+        'avg_chunk_words': (
+            sum(len(doc.split()) for doc in kb.documents) / max(1, len(kb.documents))
+        ),
+    }
+    with open(output_dir / "quality_report.json", 'w') as f:
+        json.dump(quality_report, f, indent=2)
+    print(f"✓ Quality report saved to: {output_dir / 'quality_report.json'}")
     
     # Test retrieval
     print("\n" + "=" * 60)
