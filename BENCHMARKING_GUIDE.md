@@ -108,6 +108,25 @@ The benchmark already gives you the raw ingredients for visualizations. For thes
 * Correct vs incorrect prediction table for qualitative examples
 * Error case table sorted by confidence or by frequent confusion pairs
 
+## Plotting The Benchmark Outputs
+
+Use [scripts/plot_benchmark_results.py](scripts/plot_benchmark_results.py) to turn a saved benchmark run into figures.
+
+Example:
+
+```bash
+uv run python scripts/plot_benchmark_results.py \
+  --input outputs/benchmarks/run_001 \
+  --include_artifacts
+```
+
+This writes plots to `outputs/benchmarks/run_001/plots` by default, including:
+
+* `benchmark_comparison.png`
+* `benchmark_status.png`
+* `per_class_f1_heatmap.png` when class-wise metrics are available
+* `confusion_matrix_<model>.png` when confusion-matrix artifacts exist
+
 ## Best Practice For Clean Comparisons
 
 * Keep the dataset split seed fixed.
