@@ -28,6 +28,7 @@ from __future__ import annotations
 import argparse
 import json
 import time
+from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, List, Optional
@@ -205,33 +206,55 @@ def build_records(
     strict_topic_filter: bool = False,
     min_topic_hits: int = 1,
     exclude_low_value: bool = True,
-) -> List[dict]:
+) -> tuple[List[dict], dict]:
     pmc_ids = search_pmc_ids(query=query, max_articles=max_articles, api_key=api_key)
     output: List[dict] = []
     seen_text = set()
+    topic_scores = []
+
+    stats = {
+        "requested_articles": max_articles,
+        "matched_article_ids": len(pmc_ids),
+        "articles_processed": 0,
+        "records_extracted": 0,
+        "records_written": 0,
+        "duplicates_removed": 0,
+        "low_value_filtered": 0,
+        "topic_filtered": 0,
+        "strict_topic_filter": strict_topic_filter,
+        "min_topic_hits": min_topic_hits,
+    }
 
     for pmc_id in pmc_ids:
         xml_text = fetch_pmc_article(pmc_id, api_key=api_key)
         if not xml_text:
             continue
 
+        stats["articles_processed"] += 1
+
         try:
             records = extract_article_records(xml_text, topic=topic)
         except ET.ParseError:
             continue
 
+        stats["records_extracted"] += len(records)
+
         for record in records:
             normalized_text = normalize_whitespace(record.text)
+            topic_score = topic_relevance_score(normalized_text, topic)
+            topic_scores.append(topic_score)
 
             if exclude_low_value and has_low_value_terms(normalized_text):
+                stats["low_value_filtered"] += 1
                 continue
 
             if strict_topic_filter:
-                score = topic_relevance_score(normalized_text, topic)
-                if score < min_topic_hits:
+                if topic_score < min_topic_hits:
+                    stats["topic_filtered"] += 1
                     continue
 
             if normalized_text.lower() in seen_text:
+                stats["duplicates_removed"] += 1
                 continue
             seen_text.add(normalized_text.lower())
             output.append({
@@ -242,7 +265,19 @@ def build_records(
 
         time.sleep(delay_seconds)
 
-    return output
+    stats["records_written"] = len(output)
+    stats["duplicate_rate"] = (
+        stats["duplicates_removed"] / max(1, stats["records_extracted"])
+    )
+    stats["topic_relevance_rate"] = (
+        sum(1 for score in topic_scores if score >= min_topic_hits) / max(1, len(topic_scores))
+    )
+    stats["avg_topic_keyword_hits"] = (
+        sum(topic_scores) / max(1, len(topic_scores))
+    )
+    stats["topic_score_histogram"] = dict(Counter(topic_scores))
+
+    return output, stats
 
 
 def parse_args() -> argparse.Namespace:
@@ -287,7 +322,7 @@ def main() -> None:
     if args.strict_topic_filter:
         print(f"Min topic keyword hits: {args.min_topic_hits}")
 
-    records = build_records(
+    records, quality_report = build_records(
         query=args.query,
         max_articles=args.max_articles,
         topic=args.topic,
@@ -301,6 +336,18 @@ def main() -> None:
         json.dump(records, handle, indent=2, ensure_ascii=False)
 
     print(f"✓ Wrote {len(records)} records to {output_file}")
+
+    quality_report_file = output_file.with_name(f"{output_file.stem}_quality_report.json")
+    quality_report.update({
+        "query": args.query,
+        "topic": args.topic,
+        "output_file": str(output_file),
+        "quality_report_file": str(quality_report_file),
+        "topic_filter_hit_rate": quality_report["topic_relevance_rate"],
+    })
+    with open(quality_report_file, "w", encoding="utf-8") as handle:
+        json.dump(quality_report, handle, indent=2, ensure_ascii=False)
+    print(f"✓ Quality report saved to: {quality_report_file}")
 
 
 if __name__ == "__main__":
