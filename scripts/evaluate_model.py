@@ -21,10 +21,62 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 from sklearn.metrics import confusion_matrix, classification_report, f1_score
 
-from vqa_med.models import BaseVQAModel, VQAModelWrapper
+from vqa_med.models import BaseVQAModel, AttentionVQAModel, CaptionVQAModel
 from vqa_med.data import MedicalVQADataset
 from vqa_med.utils import get_image_transforms, get_tokenizer
 from vqa_med.config import config
+
+
+class CaptionVQADataset(MedicalVQADataset):
+    """Dataset variant that includes tokenized caption inputs."""
+
+    def __init__(
+        self,
+        data_file: Path,
+        image_dir: Path,
+        transform=None,
+        tokenizer=None,
+        max_length: int = 128,
+        caption_column: str = "caption",
+        caption_max_length: int = 64,
+    ):
+        super().__init__(data_file, image_dir, transform, tokenizer, max_length=max_length)
+        self.caption_column = caption_column
+        self.caption_max_length = caption_max_length
+
+        if self.caption_column not in self.data.columns:
+            raise ValueError(
+                f"Missing caption column '{self.caption_column}' in {data_file}. "
+                "Use a caption-augmented CSV and pass --data_csv accordingly."
+            )
+
+    def __getitem__(self, idx: int):
+        sample = super().__getitem__(idx)
+        caption_text = str(self.data.iloc[idx][self.caption_column])
+
+        caption_encoded = self.tokenizer(
+            caption_text,
+            max_length=self.caption_max_length,
+            padding="max_length",
+            truncation=True,
+            return_tensors="pt",
+        )
+
+        sample["caption"] = {
+            "input_ids": caption_encoded["input_ids"].squeeze(0),
+            "attention_mask": caption_encoded["attention_mask"].squeeze(0),
+        }
+        return sample
+
+
+def infer_model_type_from_checkpoint(state_dict: dict) -> str:
+    """Infer model family from checkpoint keys."""
+    keys = set(state_dict.keys())
+    if "feature_gate.0.weight" in keys:
+        return "caption"
+    if "cross_attention.in_proj_weight" in keys:
+        return "attention"
+    return "base"
 
 
 class VQAEvaluator:
@@ -32,14 +84,16 @@ class VQAEvaluator:
     
     def __init__(
         self,
-        model_wrapper: VQAModelWrapper,
+        model,
+        model_type: str,
         dataset,
         full_dataset=None,  # Add this parameter
         device: str = "cuda"
     ):
-        self.model = model_wrapper
+        self.model = model
+        self.model_type = model_type
         self.dataset = dataset
-        self.device = device
+        self.device = torch.device(device if torch.cuda.is_available() else "cpu")
         
         # Use full_dataset for vocab if provided, otherwise use dataset
         vocab_dataset = full_dataset if full_dataset is not None else dataset
@@ -73,16 +127,29 @@ class VQAEvaluator:
             num_workers=4,
         )
         
-        self.model.model.eval()
+        self.model.eval()
         
         with torch.no_grad():
             for batch in tqdm(loader, desc="Evaluating"):
-                # Get predictions
                 images = batch['image'].to(self.device)
                 input_ids = batch['question']['input_ids'].to(self.device)
                 attention_mask = batch['question']['attention_mask'].to(self.device)
-                
-                pred_indices, probs = self.model.predict(images, input_ids, attention_mask)
+
+                if self.model_type == 'caption':
+                    caption_input_ids = batch['caption']['input_ids'].to(self.device)
+                    caption_attention_mask = batch['caption']['attention_mask'].to(self.device)
+                    logits = self.model(
+                        images,
+                        input_ids,
+                        attention_mask,
+                        caption_input_ids,
+                        caption_attention_mask,
+                    )
+                else:
+                    logits = self.model(images, input_ids, attention_mask)
+
+                probs = torch.softmax(logits, dim=-1)
+                pred_indices = torch.argmax(logits, dim=-1)
                 
                 # Store results
                 for i in range(len(pred_indices)):
@@ -372,6 +439,13 @@ def parse_args():
     parser.add_argument('--split', type=str, default='test',
                         choices=['train', 'val', 'test', 'all'],
                         help='Which split to evaluate on')
+    parser.add_argument('--model_type', type=str, default='auto',
+                        choices=['auto', 'base', 'attention', 'caption'],
+                        help='Model family to instantiate for checkpoint loading')
+    parser.add_argument('--caption_column', type=str, default='caption',
+                        help='Caption column name (used when --model_type caption)')
+    parser.add_argument('--caption_max_length', type=int, default=64,
+                        help='Max caption token length (used when --model_type caption)')
     
     return parser.parse_args()
 
@@ -401,17 +475,44 @@ def main():
     else:
         output_dir = config.paths.outputs_dir / "evaluation"
     
+    # Load checkpoint first so we can auto-select the right model/dataset family
+    print("\nLoading checkpoint...")
+    checkpoint_path = Path(args.checkpoint)
+
+    if not checkpoint_path.exists():
+        print(f"ERROR: Checkpoint not found at {checkpoint_path}")
+        return
+
+    checkpoint = torch.load(checkpoint_path, map_location=args.device)
+    state_dict = checkpoint['model_state_dict']
+
+    model_type = args.model_type
+    if model_type == 'auto':
+        model_type = infer_model_type_from_checkpoint(state_dict)
+
+    print(f"Detected model type: {model_type}")
+
     # Load dataset
     print("\nLoading dataset...")
     transform = get_image_transforms(config.model.image_size, is_training=False)
     tokenizer = get_tokenizer(config.model.text_model)
-    
-    full_dataset = MedicalVQADataset(
-        data_file=data_csv,
-        image_dir=image_dir,
-        transform=transform,
-        tokenizer=tokenizer,
-    )
+
+    if model_type == 'caption':
+        full_dataset = CaptionVQADataset(
+            data_file=data_csv,
+            image_dir=image_dir,
+            transform=transform,
+            tokenizer=tokenizer,
+            caption_column=args.caption_column,
+            caption_max_length=args.caption_max_length,
+        )
+    else:
+        full_dataset = MedicalVQADataset(
+            data_file=data_csv,
+            image_dir=image_dir,
+            transform=transform,
+            tokenizer=tokenizer,
+        )
     
     # Get appropriate split
     if args.split != 'all':
@@ -441,33 +542,55 @@ def main():
     
     # Load model
     print("\nLoading model...")
-    checkpoint_path = Path(args.checkpoint)
-    
-    if not checkpoint_path.exists():
-        print(f"ERROR: Checkpoint not found at {checkpoint_path}")
-        return
-    
     num_classes = full_dataset.get_num_classes()
-    
-    model = BaseVQAModel(
-        num_classes=num_classes,
-        vision_model_name=config.model.vision_model,
-        text_model_name=config.model.text_model,
-        hidden_dim=config.model.hidden_dim,
-        dropout=config.model.dropout,
-    )
-    
-    checkpoint = torch.load(checkpoint_path, map_location=args.device)
+
+    if model_type == 'base':
+        model = BaseVQAModel(
+            num_classes=num_classes,
+            vision_model_name=config.model.vision_model,
+            text_model_name=config.model.text_model,
+            hidden_dim=config.model.hidden_dim,
+            dropout=config.model.dropout,
+        )
+    elif model_type == 'attention':
+        model = AttentionVQAModel(
+            num_classes=num_classes,
+            vision_model_name=config.model.vision_model,
+            text_model_name=config.model.text_model,
+            hidden_dim=config.model.hidden_dim,
+            dropout=config.model.dropout,
+        )
+    elif model_type == 'caption':
+        model = CaptionVQAModel(
+            num_classes=num_classes,
+            vision_model_name=config.model.vision_model,
+            text_model_name=config.model.text_model,
+            hidden_dim=config.model.hidden_dim,
+            dropout=config.model.dropout,
+        )
+    else:
+        raise ValueError(f"Unsupported model_type: {model_type}")
+
     model.load_state_dict(checkpoint['model_state_dict'])
-    
-    model_wrapper = VQAModelWrapper(model, device=args.device)
+    device = torch.device(args.device if torch.cuda.is_available() else 'cpu')
+    model = model.to(device)
     
     print(f"Model loaded from: {checkpoint_path}")
     print(f"Checkpoint epoch: {checkpoint.get('epoch', 'N/A')}")
-    print(f"Checkpoint val acc: {checkpoint.get('val_acc', 'N/A'):.2f}%")
+    val_acc = checkpoint.get('val_acc', None)
+    if isinstance(val_acc, (int, float)):
+        print(f"Checkpoint val acc: {val_acc:.2f}%")
+    else:
+        print("Checkpoint val acc: N/A")
     
     # Create evaluator
-    evaluator = VQAEvaluator(model_wrapper, eval_dataset, full_dataset=full_dataset, device=args.device)    
+    evaluator = VQAEvaluator(
+        model,
+        model_type=model_type,
+        dataset=eval_dataset,
+        full_dataset=full_dataset,
+        device=args.device,
+    )
     # Run evaluation
     evaluator.evaluate(batch_size=args.batch_size)
     
