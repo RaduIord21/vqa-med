@@ -19,6 +19,7 @@ from vqa_med.utils import (
     AverageMeter,
     calculate_accuracy
 )
+from vqa_med.utils.adversarial import AdversarialPromptConfig, perturb_questions
 from vqa_med.config import config
 
 
@@ -34,6 +35,11 @@ class VQATrainer:
         learning_rate: float = 1e-4,
         num_epochs: int = 10,
         checkpoint_dir: Path = None,
+        tokenizer=None,
+        adversarial_prompting: bool = False,
+        adversarial_probability: float = 0.5,
+        adversarial_mode: str = "mixed",
+        adversarial_seed: int = 42,
     ):
         """
         Args:
@@ -50,6 +56,14 @@ class VQATrainer:
         self.train_loader = train_loader
         self.val_loader = val_loader
         self.num_epochs = num_epochs
+        self.tokenizer = tokenizer
+        self.max_text_length = config.model.max_text_length
+        self.adversarial_config = AdversarialPromptConfig(
+            enabled=adversarial_prompting,
+            probability=adversarial_probability,
+            mode=adversarial_mode,
+            seed=adversarial_seed,
+        )
         
         # Loss and optimizer
         self.criterion = nn.CrossEntropyLoss()
@@ -87,6 +101,35 @@ class VQATrainer:
         print(f"Trainer initialized on device: {self.device}")
         print(f"Training samples: {len(train_loader.dataset)}")
         print(f"Validation samples: {len(val_loader.dataset)}")
+        if self.adversarial_config.enabled:
+            print(
+                "Adversarial prompting enabled: "
+                f"mode={self.adversarial_config.mode}, "
+                f"prob={self.adversarial_config.probability:.2f}, "
+                f"seed={self.adversarial_config.seed}"
+            )
+
+    def _prepare_question_batch(self, batch, apply_adversarial: bool = False):
+        question_texts = batch["question_text"]
+        if isinstance(question_texts, str):
+            question_texts = [question_texts]
+
+        if apply_adversarial and self.adversarial_config.enabled and self.tokenizer is not None:
+            prepared_questions, prompt_flags = perturb_questions(question_texts, self.adversarial_config)
+            encoded = self.tokenizer(
+                prepared_questions,
+                max_length=self.max_text_length,
+                padding='max_length',
+                truncation=True,
+                return_tensors='pt',
+            )
+            return encoded['input_ids'].to(self.device), encoded['attention_mask'].to(self.device), prompt_flags
+
+        return (
+            batch['question']['input_ids'].to(self.device),
+            batch['question']['attention_mask'].to(self.device),
+            [False for _ in question_texts],
+        )
     
     def train_epoch(self, epoch: int) -> tuple:
         """Train for one epoch."""
@@ -100,8 +143,7 @@ class VQATrainer:
         for batch_idx, batch in enumerate(pbar):
             # Move to device
             images = batch['image'].to(self.device)
-            input_ids = batch['question']['input_ids'].to(self.device)
-            attention_mask = batch['question']['attention_mask'].to(self.device)
+            input_ids, attention_mask, _ = self._prepare_question_batch(batch, apply_adversarial=True)
             labels = batch['answer'].to(self.device)
             
             # Forward pass
@@ -147,8 +189,7 @@ class VQATrainer:
             for batch in pbar:
                 # Move to device
                 images = batch['image'].to(self.device)
-                input_ids = batch['question']['input_ids'].to(self.device)
-                attention_mask = batch['question']['attention_mask'].to(self.device)
+                input_ids, attention_mask, _ = self._prepare_question_batch(batch, apply_adversarial=False)
                 labels = batch['answer'].to(self.device)
                 
                 # Forward pass
@@ -314,6 +355,15 @@ def parse_args():
                         help='Directory to save checkpoints')
     parser.add_argument('--resume_from', type=str, default=None,
                         help='Path to checkpoint to resume from')
+    parser.add_argument('--adversarial_prompting', action='store_true',
+                        help='Enable adversarial prompt augmentation during training')
+    parser.add_argument('--adversarial_probability', type=float, default=0.5,
+                        help='Probability of perturbing each training question')
+    parser.add_argument('--adversarial_mode', type=str, default='mixed',
+                        choices=['mixed', 'instruction', 'careful', 'strict', 'contrast'],
+                        help='Prompt style used for adversarial augmentation')
+    parser.add_argument('--adversarial_seed', type=int, default=42,
+                        help='Seed for deterministic adversarial prompt selection')
     parser.add_argument('--seed', type=int, default=42,
                         help='Random seed')
     
@@ -423,6 +473,11 @@ def main():
         learning_rate=args.learning_rate or config.model.learning_rate,
         num_epochs=args.num_epochs or config.model.num_epochs,
         checkpoint_dir=checkpoint_dir,
+        tokenizer=tokenizer,
+        adversarial_prompting=args.adversarial_prompting,
+        adversarial_probability=args.adversarial_probability,
+        adversarial_mode=args.adversarial_mode,
+        adversarial_seed=args.adversarial_seed,
     )
     
     # Train

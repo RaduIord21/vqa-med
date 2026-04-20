@@ -25,6 +25,10 @@ def parse_args():
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--split", type=str, default="val", choices=["train", "val", "test"])
     parser.add_argument("--top_k_docs", type=int, default=3)
+    parser.add_argument("--adversarial_prompting", action="store_true")
+    parser.add_argument("--adversarial_probability", type=float, default=0.5)
+    parser.add_argument("--adversarial_mode", type=str, default="mixed", choices=["mixed", "instruction", "careful", "strict", "contrast"])
+    parser.add_argument("--adversarial_seed", type=int, default=42)
     parser.add_argument("--output_dir", type=str, default=None)
     return parser.parse_args()
 
@@ -51,6 +55,10 @@ def main():
         seed=args.seed,
         split=args.split,
         top_k_docs=args.top_k_docs,
+        adversarial_prompting=args.adversarial_prompting,
+        adversarial_probability=args.adversarial_probability,
+        adversarial_mode=args.adversarial_mode,
+        adversarial_seed=args.adversarial_seed,
     )
 
     output_dir = Path(args.output_dir) if args.output_dir else None

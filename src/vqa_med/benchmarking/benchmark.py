@@ -23,6 +23,7 @@ from vqa_med.models import (
     VQAModelWrapper,
 )
 from vqa_med.utils import get_image_transforms, get_tokenizer
+from vqa_med.utils.adversarial import AdversarialPromptConfig, perturb_questions
 
 
 @dataclass
@@ -42,6 +43,10 @@ class BenchmarkSpec:
     seed: int = 42
     split: str = "val"
     top_k_docs: int = 3
+    adversarial_prompting: bool = False
+    adversarial_probability: float = 0.5
+    adversarial_mode: str = "mixed"
+    adversarial_seed: int = 42
     available: bool = True
     notes: str = ""
 
@@ -61,6 +66,9 @@ class BenchmarkResult:
     checkpoint_path: Optional[str]
     inference_path: Optional[str] = None
     confusion_matrix_path: Optional[str] = None
+    adversarial_prompting: bool = False
+    adversarial_probability: float = 0.5
+    adversarial_mode: str = "mixed"
     notes: str = ""
 
 
@@ -145,6 +153,9 @@ class BenchmarkRunner:
                 checkpoint_path=str(spec.checkpoint_path) if spec.checkpoint_path else None,
                 inference_path=None,
                 confusion_matrix_path=None,
+                adversarial_prompting=spec.adversarial_prompting,
+                adversarial_probability=spec.adversarial_probability,
+                adversarial_mode=spec.adversarial_mode,
                 notes=spec.notes or "Model marked unavailable.",
             )
 
@@ -161,6 +172,9 @@ class BenchmarkRunner:
                 checkpoint_path=None,
                 inference_path=None,
                 confusion_matrix_path=None,
+                adversarial_prompting=spec.adversarial_prompting,
+                adversarial_probability=spec.adversarial_probability,
+                adversarial_mode=spec.adversarial_mode,
                 notes="Missing checkpoint path.",
             )
 
@@ -178,6 +192,9 @@ class BenchmarkRunner:
                 checkpoint_path=str(checkpoint_path),
                 inference_path=None,
                 confusion_matrix_path=None,
+                adversarial_prompting=spec.adversarial_prompting,
+                adversarial_probability=spec.adversarial_probability,
+                adversarial_mode=spec.adversarial_mode,
                 notes="Checkpoint file not found.",
             )
 
@@ -195,6 +212,9 @@ class BenchmarkRunner:
                 checkpoint_path=str(checkpoint_path),
                 inference_path=None,
                 confusion_matrix_path=None,
+                adversarial_prompting=spec.adversarial_prompting,
+                adversarial_probability=spec.adversarial_probability,
+                adversarial_mode=spec.adversarial_mode,
                 notes="Dataset is empty.",
             )
 
@@ -214,6 +234,9 @@ class BenchmarkRunner:
                 checkpoint_path=str(checkpoint_path),
                 inference_path=None,
                 confusion_matrix_path=None,
+                adversarial_prompting=spec.adversarial_prompting,
+                adversarial_probability=spec.adversarial_probability,
+                adversarial_mode=spec.adversarial_mode,
                 notes=f"Unsupported split '{spec.split}'.",
             )
 
@@ -238,6 +261,9 @@ class BenchmarkRunner:
                 checkpoint_path=str(checkpoint_path),
                 inference_path=None,
                 confusion_matrix_path=None,
+                adversarial_prompting=spec.adversarial_prompting,
+                adversarial_probability=spec.adversarial_probability,
+                adversarial_mode=spec.adversarial_mode,
                 notes=f"{type(exc).__name__}: {exc}",
             )
 
@@ -253,6 +279,9 @@ class BenchmarkRunner:
             checkpoint_path=str(checkpoint_path),
             inference_path=inference_path,
             confusion_matrix_path=confusion_path,
+            adversarial_prompting=spec.adversarial_prompting,
+            adversarial_probability=spec.adversarial_probability,
+            adversarial_mode=spec.adversarial_mode,
             notes=spec.notes,
         )
 
@@ -279,6 +308,15 @@ class BenchmarkRunner:
             tokenizer=self.tokenizer,
             max_length=config.model.max_text_length,
         )
+
+    def _apply_adversarial_prompts(self, spec: BenchmarkSpec, questions):
+        config = AdversarialPromptConfig(
+            enabled=spec.adversarial_prompting,
+            probability=spec.adversarial_probability,
+            mode=spec.adversarial_mode,
+            seed=spec.adversarial_seed,
+        )
+        return perturb_questions(questions, config)
 
     @staticmethod
     def _split_dataset(dataset, seed: int):
@@ -317,7 +355,7 @@ class BenchmarkRunner:
             checkpoint = torch.load(checkpoint_path, map_location=device)
             state_dict = checkpoint.get("model_state_dict", checkpoint)
             wrapper.model.load_state_dict(state_dict)
-            return wrapper.model, lambda batch: self._predict_baseline(wrapper.model, batch, device)
+            return wrapper.model, lambda batch: self._predict_baseline(spec, wrapper.model, batch, device)
 
         if spec.model_type == "rag":
             if spec.knowledge_base_path is None:
@@ -331,7 +369,7 @@ class BenchmarkRunner:
             checkpoint = torch.load(checkpoint_path, map_location=device)
             state_dict = checkpoint.get("model_state_dict", checkpoint)
             model.load_state_dict(state_dict)
-            return model, lambda batch: self._predict_rag(model, batch, device)
+            return model, lambda batch: self._predict_rag(spec, model, batch, device)
 
         if spec.model_type == "caption":
             model = CaptionVQAModel(num_classes=num_classes)
@@ -339,7 +377,7 @@ class BenchmarkRunner:
             checkpoint = torch.load(checkpoint_path, map_location=device)
             state_dict = checkpoint.get("model_state_dict", checkpoint)
             model.load_state_dict(state_dict)
-            return model, lambda batch: self._predict_caption(model, batch, device)
+            return model, lambda batch: self._predict_caption(spec, model, batch, device)
 
         if spec.model_type == "kg":
             raise NotImplementedError(
@@ -459,20 +497,43 @@ class BenchmarkRunner:
 
         return str(inference_path), str(confusion_path)
 
-    @staticmethod
-    def _predict_baseline(model, batch, device):
+    def _predict_baseline(self, spec, model, batch, device):
         images = batch["image"].to(device)
-        input_ids = batch["question"]["input_ids"].to(device)
-        attention_mask = batch["question"]["attention_mask"].to(device)
+        question_texts = batch["question_text"]
+        if isinstance(question_texts, str):
+            question_texts = [question_texts]
+        if spec.adversarial_prompting:
+            question_texts, _ = self._apply_adversarial_prompts(spec, question_texts)
+        encoded = self.tokenizer(
+            question_texts,
+            max_length=config.model.max_text_length,
+            padding="max_length",
+            truncation=True,
+            return_tensors="pt",
+        )
+        input_ids = encoded["input_ids"].to(device)
+        attention_mask = encoded["attention_mask"].to(device)
         labels = batch["answer"].to(device)
         logits = model(images, input_ids, attention_mask)
         predictions = torch.argmax(logits, dim=1).cpu()
         return predictions, labels.cpu()
 
-    def _predict_caption(self, model, batch, device):
+    def _predict_caption(self, spec, model, batch, device):
         images = batch["image"].to(device)
-        question_ids = batch["question"]["input_ids"].to(device)
-        question_mask = batch["question"]["attention_mask"].to(device)
+        question_texts = batch["question_text"]
+        if isinstance(question_texts, str):
+            question_texts = [question_texts]
+        if spec.adversarial_prompting:
+            question_texts, _ = self._apply_adversarial_prompts(spec, question_texts)
+        question_encoded = self.tokenizer(
+            question_texts,
+            max_length=config.model.max_text_length,
+            padding="max_length",
+            truncation=True,
+            return_tensors="pt",
+        )
+        question_ids = question_encoded["input_ids"].to(device)
+        question_mask = question_encoded["attention_mask"].to(device)
         caption_ids = batch["caption"]["input_ids"].to(device)
         caption_mask = batch["caption"]["attention_mask"].to(device)
         labels = batch["answer"].to(device)
@@ -480,18 +541,26 @@ class BenchmarkRunner:
         predictions = torch.argmax(logits, dim=1).cpu()
         return predictions, labels.cpu()
 
-    def _predict_rag(self, model, batch, device):
+    def _predict_rag(self, spec, model, batch, device):
         images = batch["image"].to(device)
-        input_ids = batch["question"]["input_ids"].to(device)
-        attention_mask = batch["question"]["attention_mask"].to(device)
+        question_texts = batch["question_text"]
+        if isinstance(question_texts, str):
+            question_texts = [question_texts]
+        if spec.adversarial_prompting:
+            question_texts, _ = self._apply_adversarial_prompts(spec, question_texts)
+        question_encoded = self.tokenizer(
+            question_texts,
+            max_length=config.model.max_text_length,
+            padding="max_length",
+            truncation=True,
+            return_tensors="pt",
+        )
+        input_ids = question_encoded["input_ids"].to(device)
+        attention_mask = question_encoded["attention_mask"].to(device)
         labels = batch["answer"].to(device)
 
-        questions = batch["question_text"]
-        if isinstance(questions, str):
-            questions = [questions]
-
         contexts = []
-        for question in questions:
+        for question in question_texts:
             retrieved_docs = model.retrieve_knowledge([question])
             contexts.append(retrieved_docs[0] if retrieved_docs else "")
 
@@ -531,6 +600,10 @@ def build_default_specs(
     seed: int,
     split: str,
     top_k_docs: int,
+        adversarial_prompting: bool,
+        adversarial_probability: float,
+        adversarial_mode: str,
+        adversarial_seed: int,
 ) -> List[BenchmarkSpec]:
     return [
         BenchmarkSpec(
@@ -544,6 +617,10 @@ def build_default_specs(
             seed=seed,
             split=split,
             notes="Original baseline model.",
+            adversarial_prompting=adversarial_prompting,
+            adversarial_probability=adversarial_probability,
+            adversarial_mode=adversarial_mode,
+            adversarial_seed=adversarial_seed,
         ),
         BenchmarkSpec(
             name="kg-enhanced",
@@ -557,6 +634,10 @@ def build_default_specs(
             split=split,
             available=False,
             notes="KG-enhanced model is not implemented yet.",
+            adversarial_prompting=adversarial_prompting,
+            adversarial_probability=adversarial_probability,
+            adversarial_mode=adversarial_mode,
+            adversarial_seed=adversarial_seed,
         ),
         BenchmarkSpec(
             name="rag",
@@ -571,6 +652,10 @@ def build_default_specs(
             split=split,
             top_k_docs=top_k_docs,
             notes="Improved RAG benchmark.",
+            adversarial_prompting=adversarial_prompting,
+            adversarial_probability=adversarial_probability,
+            adversarial_mode=adversarial_mode,
+            adversarial_seed=adversarial_seed,
         ),
         BenchmarkSpec(
             name="caption",
@@ -585,6 +670,10 @@ def build_default_specs(
             seed=seed,
             split=split,
             notes="Caption-augmented benchmark.",
+            adversarial_prompting=adversarial_prompting,
+            adversarial_probability=adversarial_probability,
+            adversarial_mode=adversarial_mode,
+            adversarial_seed=adversarial_seed,
         ),
     ]
 

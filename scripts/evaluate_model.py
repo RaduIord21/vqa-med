@@ -24,6 +24,7 @@ from sklearn.metrics import confusion_matrix, classification_report, f1_score
 from vqa_med.models import BaseVQAModel, AttentionVQAModel, CaptionVQAModel
 from vqa_med.data import MedicalVQADataset
 from vqa_med.utils import get_image_transforms, get_tokenizer
+from vqa_med.utils.adversarial import AdversarialPromptConfig, perturb_questions
 from vqa_med.config import config
 
 
@@ -86,14 +87,26 @@ class VQAEvaluator:
         self,
         model,
         model_type: str,
+        tokenizer,
         dataset,
         full_dataset=None,  # Add this parameter
-        device: str = "cuda"
+        device: str = "cuda",
+        adversarial_prompting: bool = False,
+        adversarial_probability: float = 0.5,
+        adversarial_mode: str = "mixed",
+        adversarial_seed: int = 42,
     ):
         self.model = model
         self.model_type = model_type
+        self.tokenizer = tokenizer
         self.dataset = dataset
         self.device = torch.device(device if torch.cuda.is_available() else "cpu")
+        self.adversarial_config = AdversarialPromptConfig(
+            enabled=adversarial_prompting,
+            probability=adversarial_probability,
+            mode=adversarial_mode,
+            seed=adversarial_seed,
+        )
         
         # Use full_dataset for vocab if provided, otherwise use dataset
         vocab_dataset = full_dataset if full_dataset is not None else dataset
@@ -114,6 +127,26 @@ class VQAEvaluator:
         self.answer_types = []
         self.questions = []
         self.images = []
+
+    def _prepare_question_inputs(self, batch):
+        question_texts = batch["question_text"]
+        if isinstance(question_texts, str):
+            question_texts = [question_texts]
+
+        if self.adversarial_config.enabled:
+            question_texts, _ = perturb_questions(question_texts, self.adversarial_config)
+
+        question_encoded = self.tokenizer(
+            question_texts,
+            max_length=config.model.max_text_length,
+            padding="max_length",
+            truncation=True,
+            return_tensors="pt",
+        )
+        return (
+            question_encoded["input_ids"].to(self.device),
+            question_encoded["attention_mask"].to(self.device),
+        )
     
     def evaluate(self, batch_size: int = 16):
         """Run evaluation on entire dataset."""
@@ -132,8 +165,7 @@ class VQAEvaluator:
         with torch.no_grad():
             for batch in tqdm(loader, desc="Evaluating"):
                 images = batch['image'].to(self.device)
-                input_ids = batch['question']['input_ids'].to(self.device)
-                attention_mask = batch['question']['attention_mask'].to(self.device)
+                input_ids, attention_mask = self._prepare_question_inputs(batch)
 
                 if self.model_type == 'caption':
                     caption_input_ids = batch['caption']['input_ids'].to(self.device)
@@ -446,6 +478,15 @@ def parse_args():
                         help='Caption column name (used when --model_type caption)')
     parser.add_argument('--caption_max_length', type=int, default=64,
                         help='Max caption token length (used when --model_type caption)')
+    parser.add_argument('--adversarial_prompting', action='store_true',
+                        help='Evaluate on adversarially prompted questions')
+    parser.add_argument('--adversarial_probability', type=float, default=0.5,
+                        help='Probability of perturbing each question')
+    parser.add_argument('--adversarial_mode', type=str, default='mixed',
+                        choices=['mixed', 'instruction', 'careful', 'strict', 'contrast'],
+                        help='Prompt style used for adversarial evaluation')
+    parser.add_argument('--adversarial_seed', type=int, default=42,
+                        help='Seed for deterministic adversarial prompt selection')
     
     return parser.parse_args()
 
@@ -587,9 +628,14 @@ def main():
     evaluator = VQAEvaluator(
         model,
         model_type=model_type,
+        tokenizer=tokenizer,
         dataset=eval_dataset,
         full_dataset=full_dataset,
         device=args.device,
+        adversarial_prompting=args.adversarial_prompting,
+        adversarial_probability=args.adversarial_probability,
+        adversarial_mode=args.adversarial_mode,
+        adversarial_seed=args.adversarial_seed,
     )
     # Run evaluation
     evaluator.evaluate(batch_size=args.batch_size)

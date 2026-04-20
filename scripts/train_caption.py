@@ -19,6 +19,7 @@ from vqa_med.config import config
 from vqa_med.data import MedicalVQADataset
 from vqa_med.models import CaptionVQAModel
 from vqa_med.utils import AverageMeter, calculate_accuracy, get_image_transforms, get_tokenizer
+from vqa_med.utils.adversarial import AdversarialPromptConfig, perturb_questions
 
 
 class CaptionVQADataset(MedicalVQADataset):
@@ -137,6 +138,11 @@ class CaptionTrainer:
         checkpoint_dir,
         use_amp=True,
         gradient_accumulation_steps=1,
+        tokenizer=None,
+        adversarial_prompting: bool = False,
+        adversarial_probability: float = 0.5,
+        adversarial_mode: str = "mixed",
+        adversarial_seed: int = 42,
     ):
         self.device = torch.device(device if torch.cuda.is_available() else "cpu")
         self.use_amp = use_amp and torch.cuda.is_available()
@@ -146,6 +152,14 @@ class CaptionTrainer:
         self.train_loader = train_loader
         self.val_loader = val_loader
         self.num_epochs = epochs
+        self.tokenizer = tokenizer
+        self.max_text_length = config.model.max_text_length
+        self.adversarial_config = AdversarialPromptConfig(
+            enabled=adversarial_prompting,
+            probability=adversarial_probability,
+            mode=adversarial_mode,
+            seed=adversarial_seed,
+        )
 
         self.criterion = nn.CrossEntropyLoss()
 
@@ -175,10 +189,43 @@ class CaptionTrainer:
         self.history = {"train_loss": [], "train_acc": [], "val_loss": [], "val_acc": [], "lr": []}
         self.best_val_acc = 0.0
 
-    def _forward_batch(self, batch):
+        if self.adversarial_config.enabled:
+            print(
+                "Adversarial prompting enabled: "
+                f"mode={self.adversarial_config.mode}, "
+                f"prob={self.adversarial_config.probability:.2f}, "
+                f"seed={self.adversarial_config.seed}"
+            )
+
+    def _prepare_question_batch(self, batch, apply_adversarial: bool = False):
+        question_texts = batch["question_text"]
+        if isinstance(question_texts, str):
+            question_texts = [question_texts]
+
+        if apply_adversarial and self.adversarial_config.enabled and self.tokenizer is not None:
+            prepared_questions, prompt_flags = perturb_questions(question_texts, self.adversarial_config)
+            encoded = self.tokenizer(
+                prepared_questions,
+                max_length=self.max_text_length,
+                padding="max_length",
+                truncation=True,
+                return_tensors="pt",
+            )
+            return (
+                encoded["input_ids"].to(self.device),
+                encoded["attention_mask"].to(self.device),
+                prompt_flags,
+            )
+
+        return (
+            batch["question"]["input_ids"].to(self.device),
+            batch["question"]["attention_mask"].to(self.device),
+            [False for _ in question_texts],
+        )
+
+    def _forward_batch(self, batch, apply_adversarial: bool = False):
         images = batch["image"].to(self.device)
-        q_ids = batch["question"]["input_ids"].to(self.device)
-        q_mask = batch["question"]["attention_mask"].to(self.device)
+        q_ids, q_mask, _ = self._prepare_question_batch(batch, apply_adversarial=apply_adversarial)
         c_ids = batch["caption"]["input_ids"].to(self.device)
         c_mask = batch["caption"]["attention_mask"].to(self.device)
         labels = batch["answer"].to(self.device)
@@ -197,7 +244,7 @@ class CaptionTrainer:
         for batch_idx, batch in enumerate(pbar):
             if self.use_amp:
                 with autocast():
-                    logits, labels, batch_size = self._forward_batch(batch)
+                    logits, labels, batch_size = self._forward_batch(batch, apply_adversarial=True)
                     loss = self.criterion(logits, labels) / self.gradient_accumulation_steps
                 self.scaler.scale(loss).backward()
 
@@ -208,7 +255,7 @@ class CaptionTrainer:
                     self.scaler.update()
                     self.optimizer.zero_grad()
             else:
-                logits, labels, batch_size = self._forward_batch(batch)
+                logits, labels, batch_size = self._forward_batch(batch, apply_adversarial=True)
                 loss = self.criterion(logits, labels) / self.gradient_accumulation_steps
                 loss.backward()
 
@@ -321,6 +368,10 @@ def parse_args():
     parser.add_argument("--no_amp", action="store_true")
     parser.add_argument("--device", type=str, default="cuda")
     parser.add_argument("--checkpoint_dir", type=str, default=None)
+    parser.add_argument("--adversarial_prompting", action="store_true")
+    parser.add_argument("--adversarial_probability", type=float, default=0.5)
+    parser.add_argument("--adversarial_mode", type=str, default="mixed", choices=["mixed", "instruction", "careful", "strict", "contrast"])
+    parser.add_argument("--adversarial_seed", type=int, default=42)
     parser.add_argument("--seed", type=int, default=42)
     return parser.parse_args()
 
@@ -420,6 +471,11 @@ def main():
         checkpoint_dir=checkpoint_dir,
         use_amp=not args.no_amp,
         gradient_accumulation_steps=args.gradient_accumulation_steps,
+        tokenizer=tokenizer,
+        adversarial_prompting=args.adversarial_prompting,
+        adversarial_probability=args.adversarial_probability,
+        adversarial_mode=args.adversarial_mode,
+        adversarial_seed=args.adversarial_seed,
     )
     trainer.train()
 

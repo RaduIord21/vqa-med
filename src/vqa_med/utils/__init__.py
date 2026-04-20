@@ -8,6 +8,11 @@ from .helpers import (
     AverageMeter,
     calculate_accuracy,
 )
+from .adversarial import (
+    AdversarialPromptConfig,
+    build_adversarial_prompt,
+    perturb_questions,
+)
 
 __all__ = [
     "get_image_transforms",
@@ -17,4 +22,7 @@ __all__ = [
     "get_answer_statistics",
     "AverageMeter",
     "calculate_accuracy",
+    "AdversarialPromptConfig",
+    "build_adversarial_prompt",
+    "perturb_questions",
 ]
