@@ -325,7 +325,10 @@ class ImprovedRAGTrainer:
 
 def parse_args():
     parser = argparse.ArgumentParser(description='Train Improved RAG-VQA')
-    parser.add_argument('--data_path', type=str, default='data/processed/vqa_rad_closed.csv',
+    parser.add_argument('--data_type', type=str, default='full',
+                        choices=['closed', 'full'],
+                        help='Use closed-ended or full dataset (default: full for all answer types)')
+    parser.add_argument('--data_path', type=str, default=None,
                         help='Path to VQA dataset CSV')
     parser.add_argument('--image_dir', type=str, default=None,
                         help='Path to VQA image directory')
@@ -365,6 +368,10 @@ def parse_args():
 
 def main():
     args = parse_args()
+    
+    # Resolve data path
+    if args.data_path is None:
+        args.data_path = str(config.paths.processed_data / f"vqa_rad_{args.data_type}.csv")
     
     # Set seed
     torch.manual_seed(args.seed)

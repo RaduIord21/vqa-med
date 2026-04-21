@@ -461,6 +461,9 @@ def parse_args():
                         help='Path to evaluation data CSV')
     parser.add_argument('--image_dir', type=str, default=None,
                         help='Directory containing images')
+    parser.add_argument('--data_type', type=str, default='full',
+                        choices=['closed', 'full'],
+                        help='Use closed-ended or full dataset (default: full for all answer types)')
     parser.add_argument('--output_dir', type=str, default=None,
                         help='Directory to save evaluation results')
     parser.add_argument('--batch_size', type=int, default=16,
@@ -503,7 +506,7 @@ def main():
     if args.data_csv:
         data_csv = Path(args.data_csv)
     else:
-        data_csv = config.paths.processed_data / "vqa_rad_closed.csv"
+        data_csv = config.paths.processed_data / f"vqa_rad_{args.data_type}.csv"
     
     if args.image_dir:
         image_dir = Path(args.image_dir)

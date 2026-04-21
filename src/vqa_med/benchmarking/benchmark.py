@@ -18,10 +18,20 @@ from vqa_med.config import config
 from vqa_med.data import MedicalVQADataset
 from vqa_med.models import (
     BaseVQAModel,
+    AttentionVQAModel,
     CaptionVQAModel,
     ImprovedRAGVQAModel,
     VQAModelWrapper,
 )
+def infer_model_type_from_checkpoint(state_dict: dict) -> str:
+    """Infer model family from checkpoint keys."""
+    keys = set(state_dict.keys())
+    if "feature_gate.0.weight" in keys:
+        return "caption"
+    if "cross_attention.in_proj_weight" in keys:
+        return "attention"
+    return "base"
+
 from vqa_med.utils import get_image_transforms, get_tokenizer
 from vqa_med.utils.adversarial import AdversarialPromptConfig, perturb_questions
 
@@ -349,13 +359,25 @@ class BenchmarkRunner:
     ) -> Tuple[torch.nn.Module, Callable]:
         device = torch.device(spec.device if torch.cuda.is_available() else "cpu")
 
+        # Auto-detect actual model type from checkpoint for baseline specs
+        actual_model_type = spec.model_type
+        checkpoint_dict = torch.load(checkpoint_path, map_location=device)
+        state_dict = checkpoint_dict.get("model_state_dict", checkpoint_dict)
+        
         if spec.model_type == "baseline":
+            actual_model_type = infer_model_type_from_checkpoint(state_dict)
+        
+        if actual_model_type == "base":
             model = BaseVQAModel(num_classes=num_classes)
             wrapper = VQAModelWrapper(model, device=spec.device)
-            checkpoint = torch.load(checkpoint_path, map_location=device)
-            state_dict = checkpoint.get("model_state_dict", checkpoint)
             wrapper.model.load_state_dict(state_dict)
             return wrapper.model, lambda batch: self._predict_baseline(spec, wrapper.model, batch, device)
+        
+        if actual_model_type == "attention":
+            model = AttentionVQAModel(num_classes=num_classes)
+            model.to(device)
+            model.load_state_dict(state_dict)
+            return model, lambda batch: self._predict_baseline(spec, model, batch, device)
 
         if spec.model_type == "rag":
             if spec.knowledge_base_path is None:

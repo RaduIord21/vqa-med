@@ -323,9 +323,9 @@ def parse_args():
                         help='Path to CSV file with QA pairs')
     parser.add_argument('--image_dir', type=str, default=None,
                         help='Directory containing images')
-    parser.add_argument('--data_type', type=str, default='closed',
+    parser.add_argument('--data_type', type=str, default='full',
                         choices=['closed', 'full'],
-                        help='Use closed-ended or full dataset')
+                        help='Use closed-ended or full dataset (default: full for all answer types)')
     
     # Model arguments
     parser.add_argument('--vision_model', type=str, default=None,

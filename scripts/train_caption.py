@@ -353,6 +353,9 @@ def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--data_csv", type=str, default=None)
     parser.add_argument("--image_dir", type=str, default=None)
+    parser.add_argument("--data_type", type=str, default='full',
+                        choices=['closed', 'full'],
+                        help='Use closed-ended or full dataset (default: full for all answer types)')
     parser.add_argument("--caption_column", type=str, default="caption")
     parser.add_argument("--caption_max_length", type=int, default=64)
     parser.add_argument("--generate_captions", action="store_true")
@@ -382,14 +385,14 @@ def main():
     torch.manual_seed(args.seed)
     np.random.seed(args.seed)
 
-    data_csv = Path(args.data_csv) if args.data_csv else config.paths.processed_data / "vqa_rad_closed.csv"
+    data_csv = Path(args.data_csv) if args.data_csv else config.paths.processed_data / f"vqa_rad_{args.data_type}.csv"
     image_dir = Path(args.image_dir) if args.image_dir else config.paths.raw_data / "VQA-RAD" / "images"
 
     if args.generate_captions:
         cache_path = (
             Path(args.caption_cache_file)
             if args.caption_cache_file
-            else config.paths.processed_data / "vqa_rad_closed_with_captions.csv"
+            else config.paths.processed_data / f"vqa_rad_{args.data_type}_with_captions.csv"
         )
         data_csv = build_or_load_caption_cache(
             data_csv=data_csv,

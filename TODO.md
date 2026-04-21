@@ -5,6 +5,12 @@
 - Validate the improved KB source quality first: topic relevance and duplicate rate.
 - Treat caption at 69.59% as the current comparison baseline until RAG is reproduced.
 
+## Latest robustness check (April 20, 2026)
+- Caption clean accuracy: 63.78%
+- Caption adversarial accuracy: 63.27%
+- Robustness drop: 0.51 percentage points
+- Interpretation: robustness is acceptable (small drop), but clean performance is below the previous caption high-water mark.
+
 ## Required run order
 1. `scripts/prepare_vqa_rad.py`
 2. `scripts/build_pmc_source_file.py`
@@ -18,7 +24,7 @@
 - Build the improved KB and inspect the quality report.
 - Reproduce the 70.38% improved-RAG run with fixed seeds.
 - Run controlled comparison arms for standard RAG and captioning.
-- Add adversarial prompting / robustness experiments after the clean run is stable.
+- Add adversarial prompting / robustness experiments after the clean run is stable. (initial check completed; continue after clean performance is re-raised)
 - Compile a compact impact table with command, config diff, validation accuracy, and robustness notes.
 - Choose the next experiment using mean accuracy and run-to-run variance.
 

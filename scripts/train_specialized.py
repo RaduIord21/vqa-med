@@ -207,6 +207,9 @@ def parse_args():
                         help='Type of specialized model to train')
     parser.add_argument('--data_csv', type=str, default=None)
     parser.add_argument('--image_dir', type=str, default=None)
+    parser.add_argument('--data_type', type=str, default='full',
+                        choices=['closed', 'full'],
+                        help='Use closed-ended or full dataset (default: full for all answer types)')
     parser.add_argument('--batch_size', type=int, default=16)
     parser.add_argument('--learning_rate', type=float, default=2e-4)
     parser.add_argument('--num_epochs', type=int, default=40)
@@ -227,7 +230,7 @@ def main():
     print("=" * 60)
     
     # Paths
-    data_csv = Path(args.data_csv) if args.data_csv else config.paths.processed_data / "vqa_rad_closed.csv"
+    data_csv = Path(args.data_csv) if args.data_csv else config.paths.processed_data / f"vqa_rad_{args.data_type}.csv"
     image_dir = Path(args.image_dir) if args.image_dir else config.paths.raw_data / "VQA-RAD" / "images"
     
     # Create filtered dataset

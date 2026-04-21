@@ -201,7 +201,7 @@ def main():
     print("=" * 60)
     
     # Paths
-    data_csv = Path(args.data_csv) if args.data_csv else config.paths.processed_data / "vqa_rad_closed.csv"
+    data_csv = Path(args.data_csv) if args.data_csv else config.paths.processed_data / f"vqa_rad_{args.data_type}.csv"
     image_dir = Path(args.image_dir) if args.image_dir else config.paths.raw_data / "VQA-RAD" / "images"
     
     # Data
