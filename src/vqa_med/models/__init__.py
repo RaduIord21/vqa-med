@@ -4,6 +4,7 @@ from .attention_vqa import AttentionVQAModel, AttentionVQAModelWrapper
 from .caption_vqa import CaptionVQAModel
 from .rag_vqa import RAGVQAModel
 from .rag_vqa_improved import ImprovedRAGVQAModel
+from .rag_caption_vqa import RAGCaptionVQAModel
 
 __all__ = [
     "BaseVQAModel", 
@@ -13,4 +14,5 @@ __all__ = [
     "CaptionVQAModel",
     "RAGVQAModel",
     "ImprovedRAGVQAModel",
+    "RAGCaptionVQAModel",
 ]
